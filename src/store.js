@@ -2,13 +2,15 @@
 
 /**
  * Tiny JSON file store. Zero dependencies, good enough for the concierge MVP.
- * Data file: ./data.json (created on first run). Back it up like anything else.
+ * Data file: $DATA_DIR/data.json (defaults to the repo root). On Railway,
+ * mount a volume and set DATA_DIR to its path so tickets survive redeploys.
  */
 
 const fs = require('fs');
 const path = require('path');
 
-const DATA_FILE = path.join(__dirname, '..', 'data.json');
+const DATA_DIR = process.env.DATA_DIR || path.join(__dirname, '..');
+const DATA_FILE = path.join(DATA_DIR, 'data.json');
 
 function blank() {
   return { conversations: {}, tickets: [], ticketSeq: 1000 };
@@ -23,6 +25,7 @@ function load() {
 }
 
 function save(data) {
+  fs.mkdirSync(DATA_DIR, { recursive: true });
   const tmp = DATA_FILE + '.tmp';
   fs.writeFileSync(tmp, JSON.stringify(data, null, 2));
   fs.renameSync(tmp, DATA_FILE);

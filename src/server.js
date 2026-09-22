@@ -11,16 +11,56 @@
  */
 
 const express = require('express');
+const crypto = require('crypto');
 const path = require('path');
 const store = require('./store');
 const wa = require('./whatsapp');
 const triage = require('./triage');
 
 const app = express();
-app.use(express.json({ limit: '10mb' }));
+// Capture the raw body so we can verify Meta's X-Hub-Signature-256.
+app.use(express.json({
+  limit: '10mb',
+  verify: (req, _res, buf) => { req.rawBody = buf; },
+}));
 
-const VERIFY_TOKEN = process.env.WHATSAPP_VERIFY_TOKEN || 'rentfresh-verify';
+const VERIFY_TOKEN = process.env.WHATSAPP_VERIFY_TOKEN || '';
+const APP_SECRET = process.env.WHATSAPP_APP_SECRET || '';
 const PORT = process.env.PORT || 3000;
+const COMMIT = process.env.RAILWAY_GIT_COMMIT_SHA || null;
+
+// Structured event log (JSON lines) for Railway logs.
+function logEvent(obj) {
+  try {
+    console.log(JSON.stringify(Object.assign({ ts: new Date().toISOString() }, obj)));
+  } catch (e) {
+    console.log('[logEvent failed]', e.message);
+  }
+}
+
+// --- Webhook signature verification (Meta X-Hub-Signature-256) ----------------
+function validSignature(req) {
+  if (!APP_SECRET) return true; // not configured: enforced once the secret is set
+  const sig = req.headers['x-hub-signature-256'] || '';
+  if (!sig.startsWith('sha256=')) return false;
+  const expected =
+    'sha256=' + crypto.createHmac('sha256', APP_SECRET).update(req.rawBody || '').digest('hex');
+  const a = Buffer.from(sig);
+  const b = Buffer.from(expected);
+  return a.length === b.length && crypto.timingSafeEqual(a, b);
+}
+
+// --- Simple in-memory rate limiter ----------------------------------------------
+const buckets = new Map();
+function rateLimited(key, max, windowMs) {
+  const now = Date.now();
+  let b = buckets.get(key);
+  if (!b || now > b.reset) b = { count: 0, reset: now + windowMs };
+  b.count += 1;
+  buckets.set(key, b);
+  if (buckets.size > 5000) buckets.clear(); // safety valve
+  return b.count > max;
+}
 
 // Optional HTTP Basic Auth for the inbox + API. Set INBOX_USER/INBOX_PASS.
 function auth(req, res, next) {
@@ -39,6 +79,10 @@ function auth(req, res, next) {
 
 // --- Meta webhook verification ------------------------------------------------
 app.get('/webhook', (req, res) => {
+  if (!VERIFY_TOKEN) {
+    console.error('webhook verify attempted but WHATSAPP_VERIFY_TOKEN is not set');
+    return res.sendStatus(403);
+  }
   const mode = req.query['hub.mode'];
   const token = req.query['hub.verify_token'];
   const challenge = req.query['hub.challenge'];
@@ -51,6 +95,10 @@ app.get('/webhook', (req, res) => {
 
 // --- Incoming WhatsApp messages -----------------------------------------------
 app.post('/webhook', (req, res) => {
+  if (!validSignature(req)) {
+    logEvent({ event: 'webhook_rejected', reason: 'bad_signature' });
+    return res.sendStatus(403);
+  }
   res.sendStatus(200); // ack Meta fast, process after
   (async () => {
     try {
@@ -71,14 +119,19 @@ app.post('/webhook', (req, res) => {
 async function reply(to, text) {
   store.addMessage(to, 'out', 'text', text);
   try {
-    await wa.sendText(to, text);
+    const result = await wa.sendText(to, text);
+    logEvent({ event: 'outbound', to, ok: true, dryRun: !!(result && result.dryRun) });
   } catch (err) {
-    console.error('send failed:', err.message);
+    logEvent({ event: 'outbound', to, ok: false, error: err.message });
   }
 }
 
 async function handleMessage(value, msg) {
   const from = msg.from;
+  if (rateLimited('sender:' + from, 20, 60 * 1000)) {
+    logEvent({ event: 'rate_limited', from });
+    return;
+  }
   const contact = value.contacts && value.contacts[0];
   const name = (contact && contact.profile && contact.profile.name) || 'Unknown';
   const convo = store.getConversation(from, name);
@@ -97,6 +150,11 @@ async function handleMessage(value, msg) {
 async function handleText(from, convo, text) {
   // 1. Emergency always wins, regardless of intent.
   const result = triage.classify(text);
+  logEvent({
+    event: 'inbound', from, kind: 'text',
+    trade: result.trade, urgency: result.urgency,
+    emergency: !!result.emergency, rule: result.ruleId || null,
+  });
   if (result.emergency) {
     await reply(from, result.advice);
     const ticket = store.createTicket({
@@ -346,8 +404,11 @@ app.post('/api/tickets/:id/send-to-landlord', auth, async (req, res) => {
   res.json({ ok: true });
 });
 
-app.get('/health', (req, res) => res.json({ ok: true, dryRun: wa.dryRun() }));
+app.get('/health', (req, res) => res.json({ ok: true, dryRun: wa.dryRun(), commit: COMMIT }));
 
 app.listen(PORT, () => {
   console.log('Smart Assist listening on :' + PORT + (wa.dryRun() ? ' (DRY_RUN: messages logged, not sent)' : ''));
+  if (!APP_SECRET) console.warn('WARNING: WHATSAPP_APP_SECRET not set — webhook signature verification is DISABLED');
+  if (!VERIFY_TOKEN) console.warn('WARNING: WHATSAPP_VERIFY_TOKEN not set — webhook verification will reject all challenges');
+  if (COMMIT) console.log('commit: ' + COMMIT);
 });
