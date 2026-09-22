@@ -68,6 +68,10 @@ const EMERGENCY_RULES = [
     patterns: [
       'flooding', 'flooded', 'water pouring', 'burst pipe',
       'gushing', 'water everywhere', 'ceiling collapsing',
+      'pouring through', 'pouring from', 'pouring down', 'pouring out',
+      'water coming through', 'water coming from', 'water coming down',
+      'coming through', 'is pouring', 'is gushing',
+      'pipe burst', 'broken pipe', 'pipe broke',
     ],
     title: 'Active flooding',
     advice:
@@ -96,7 +100,7 @@ const TRADE_KEYWORDS = {
     'leak', 'leaking', 'drip', 'dripping', 'toilet', 'sink', 'faucet', 'tap',
     'drain', 'clog', 'clogged', 'pipe', 'pipes', 'shower', 'tub', 'bathtub',
     'valve', 'puddle', 'damp', 'water stain', 'water heater', 'hot water',
-    'running water', 'low water pressure', 'no water',
+    'running water', 'low water pressure', 'no water', 'pouring',
   ],
   electrical: [
     'outlet', 'socket', 'plug', 'breaker', 'breakers', 'power', 'electricity',
@@ -203,8 +207,8 @@ function classify(text) {
   const trade = scoreTrades(padded);
   let urgency = 'routine';
   if (URGENT_PATTERNS.some((p) => padded.includes(p))) urgency = 'urgent';
-  // Active water where it should not be is at least urgent.
-  if (trade === 'plumbing' && /(actively|pouring|streaming|gushing|spreading)/.test(padded)) {
+  // Active water where it should not be is at least urgent, whatever the trade.
+  if (/(actively|pouring|streaming|gushing|spreading)/.test(padded)) {
     urgency = 'urgent';
   }
 
@@ -344,6 +348,17 @@ function wantsHuman(text) {
   return HUMAN_PATTERNS.some((p) => padded.includes(p));
 }
 
+// Short closing messages after a flow completes ("ok", "thanks").
+// Matched against the whole normalized message so words like "broken",
+// "smoke", or "mold" never false-positive on a substring like "ok".
+const ACKNOWLEDGMENT_RE = /^(ok|okay|k|thanks|thank you|thx|got it|great|perfect|awesome|sounds good|will do|bye|cool)(\s+(you|very much|so much))?$/;
+
+function isAcknowledgment(text) {
+  const t = String(text || '').toLowerCase().replace(/[^\w\s]/g, ' ').replace(/\s+/g, ' ').trim();
+  if (!t || t.length > 40) return false;
+  return ACKNOWLEDGMENT_RE.test(t);
+}
+
 function leadQuestionsMessage() {
   return (
     'Thanks for reaching out to RentFresh. So Kevin can give you an accurate quote, could you share:\n' +
@@ -401,6 +416,7 @@ module.exports = {
   analyzeImageWithAI,
   isLeadInquiry,
   wantsHuman,
+  isAcknowledgment,
   leadQuestionsMessage,
   landlordSummaryMessage,
   parseLandlordDecision,

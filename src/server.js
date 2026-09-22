@@ -128,6 +128,13 @@ async function handleText(from, convo, text) {
   if (convo.state === 'awaiting_info' && convo.issue) return finishTriage(from, convo, text);
   if (convo.state === 'awaiting_lead' && convo.lead) return finishLead(from, convo, text);
 
+  // 4b. Simple acknowledgment ("ok", "thanks") with no active flow:
+  // close politely instead of starting a brand-new triage.
+  if (triage.isAcknowledgment(text)) {
+    await reply(from, "You're welcome. If anything else comes up, just message me here.");
+    return;
+  }
+
   // 5. New conversation: route by intent.
   if (triage.isLeadInquiry(text)) {
     store.updateConversation(from, {
