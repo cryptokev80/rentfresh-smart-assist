@@ -351,12 +351,27 @@ function wantsHuman(text) {
 // Short closing messages after a flow completes ("ok", "thanks").
 // Matched against the whole normalized message so words like "broken",
 // "smoke", or "mold" never false-positive on a substring like "ok".
-const ACKNOWLEDGMENT_RE = /^(ok|okay|k|thanks|thank you|thx|got it|great|perfect|awesome|sounds good|will do|bye|cool)(\s+(you|very much|so much))?$/;
+// Words that can appear in a pure acknowledgment ("ok thanks", "thanks so much").
+const ACK_FILLER = new Set([
+  'ok', 'okay', 'k', 'kk', 'thanks', 'thank', 'thx', 'you',
+  'got', 'it', 'great', 'perfect', 'awesome', 'cool',
+  'sounds', 'good', 'will', 'do', 'bye',
+  'yes', 'yep', 'yup', 'sure', 'alright', 'all', 'right',
+  'much', 'very', 'so', 'appreciated', 'cheers',
+]);
+// Words that on their own carry the acknowledgment meaning.
+const ACK_CORE = new Set([
+  'ok', 'okay', 'k', 'thanks', 'thank', 'thx',
+  'got', 'great', 'perfect', 'awesome', 'cool',
+  'sounds', 'bye', 'yes', 'yep', 'sure', 'appreciated', 'cheers',
+  'will', 'do',
+]);
 
 function isAcknowledgment(text) {
   const t = String(text || '').toLowerCase().replace(/[^\w\s]/g, ' ').replace(/\s+/g, ' ').trim();
-  if (!t || t.length > 40) return false;
-  return ACKNOWLEDGMENT_RE.test(t);
+  if (!t || t.length > 60) return false;
+  const words = t.split(' ');
+  return words.some((w) => ACK_CORE.has(w)) && words.every((w) => ACK_FILLER.has(w));
 }
 
 function leadQuestionsMessage() {
