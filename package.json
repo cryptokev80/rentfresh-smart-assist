@@ -1,0 +1,1 @@
+{"dependencies":{"express":"^4.19.2"},"description":"WhatsApp AI maintenance triage for RentFresh — concierge MVP (AI triages, human dispatches)","license":"UNLICENSED","main":"src/server.js","name":"rentfresh-smart-assist","private":true,"scripts":{"start":"node src/server.js"},"version":"0.1.0"}

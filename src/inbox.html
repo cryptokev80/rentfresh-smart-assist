@@ -1,0 +1,219 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Smart Assist Inbox — RentFresh</title>
+<style>
+  * { box-sizing: border-box; }
+  body { font-family: -apple-system, system-ui, sans-serif; margin: 0; background: #f4f4f5; color: #18181b; }
+  header { background: #18181b; color: #fff; padding: 12px 16px; display: flex; justify-content: space-between; align-items: center; }
+  header h1 { font-size: 16px; margin: 0; }
+  header span { font-size: 12px; opacity: .7; }
+  main { display: grid; grid-template-columns: 280px 1fr 320px; gap: 12px; padding: 12px; height: calc(100vh - 53px); }
+  section { background: #fff; border-radius: 10px; padding: 12px; overflow-y: auto; }
+  h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .05em; color: #71717a; margin: 0 0 10px; }
+  ul { list-style: none; margin: 0; padding: 0; }
+  #convoList li { padding: 10px; border-radius: 8px; cursor: pointer; border-bottom: 1px solid #f4f4f5; }
+  #convoList li.active { background: #eef2ff; }
+  #convoList li .nm { font-weight: 600; font-size: 14px; }
+  #convoList li .ph { font-size: 12px; color: #71717a; }
+  #convoList li .lm { font-size: 12px; color: #52525b; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin-top: 4px; }
+  .flag { display: inline-block; font-size: 10px; font-weight: 700; padding: 2px 6px; border-radius: 20px; margin-left: 6px; vertical-align: middle; }
+  .flag.human { background: #fee2e2; color: #b91c1c; }
+  .msg { max-width: 80%; padding: 8px 12px; border-radius: 14px; margin: 6px 0; font-size: 14px; white-space: pre-wrap; }
+  .msg.in { background: #f4f4f5; }
+  .msg.out { background: #dbeafe; margin-left: auto; }
+  .msg .t { display: block; font-size: 10px; color: #a1a1aa; margin-top: 4px; }
+  #replyBox { display: flex; gap: 8px; margin-top: 10px; }
+  #replyBox textarea { flex: 1; border: 1px solid #e4e4e7; border-radius: 8px; padding: 8px; font-size: 14px; resize: vertical; }
+  button { background: #18181b; color: #fff; border: 0; border-radius: 8px; padding: 8px 14px; font-size: 14px; cursor: pointer; }
+  button.ghost { background: #f4f4f5; color: #18181b; }
+  .ticket { border: 1px solid #e4e4e7; border-radius: 8px; padding: 10px; margin-bottom: 10px; font-size: 13px; }
+  .ticket .id { font-weight: 700; }
+  .badge { display: inline-block; font-size: 10px; font-weight: 700; padding: 2px 8px; border-radius: 20px; margin-left: 6px; }
+  .badge.maintenance { background: #e0f2fe; color: #075985; }
+  .badge.lead { background: #fef3c7; color: #92400e; }
+  .badge.emergency { background: #fee2e2; color: #b91c1c; }
+  .badge.urgent { background: #ffedd5; color: #9a3412; }
+  .badge.routine { background: #f4f4f5; color: #52525b; }
+  .badge.new { background: #ede9fe; color: #5b21b6; }
+  .badge.dispatched { background: #d1fae5; color: #065f46; }
+  .badge.closed { background: #f4f4f5; color: #a1a1aa; }
+  .badge.approved { background: #d1fae5; color: #065f46; }
+  .badge.declined { background: #fee2e2; color: #b91c1c; }
+  .badge.awaiting { background: #ffedd5; color: #9a3412; }
+  .lsec { margin-top: 8px; border-top: 1px dashed #e4e4e7; padding-top: 8px; }
+  .lrow { display: flex; gap: 6px; margin-bottom: 6px; flex-wrap: wrap; }
+  .lrow input { flex: 1; min-width: 90px; border: 1px solid #e4e4e7; border-radius: 6px; padding: 5px 8px; font-size: 12px; }
+  .lrow button { font-size: 12px; padding: 5px 10px; }
+  .lmeta { font-size: 11px; color: #a1a1aa; margin-bottom: 4px; }
+  .lprev { background: #f4f4f5; border-radius: 8px; padding: 8px; font-size: 12px; white-space: pre-wrap; margin-top: 6px; }
+  .ticket .sum { margin: 6px 0; color: #3f3f46; }
+  .ticket .meta { font-size: 11px; color: #a1a1aa; }
+  .ticket .actions { margin-top: 8px; display: flex; gap: 6px; }
+  .ticket .actions button { font-size: 12px; padding: 5px 10px; }
+  #ticketFilters { margin-bottom: 10px; display: flex; gap: 6px; }
+  #ticketFilters button { font-size: 12px; padding: 5px 10px; }
+  #ticketFilters button.on { background: #4f46e5; }
+  @media (max-width: 900px) { main { grid-template-columns: 1fr; height: auto; } }
+</style>
+</head>
+<body>
+<header>
+  <h1>RentFresh Smart Assist</h1>
+  <span>concierge MVP - AI triages, you dispatch</span>
+</header>
+<main>
+  <section>
+    <h2>Conversations</h2>
+    <ul id="convoList"></ul>
+  </section>
+  <section>
+    <h2 id="threadTitle">Select a conversation</h2>
+    <div id="messages"></div>
+    <div id="replyBox" style="display:none">
+      <textarea id="replyText" rows="2" placeholder="Reply as RentFresh..."></textarea>
+      <button id="sendReply">Send</button>
+    </div>
+  </section>
+  <section>
+    <h2>Tickets</h2>
+    <div id="ticketFilters">
+      <button data-f="all" class="on">All</button>
+      <button data-f="new">New</button>
+      <button data-f="maintenance">Maintenance</button>
+      <button data-f="lead">Leads</button>
+    </div>
+    <ul id="ticketList"></ul>
+  </section>
+</main>
+<script>
+let activePhone = null;
+let ticketFilter = 'all';
+
+async function jget(url) { const r = await fetch(url); return r.json(); }
+async function jpost(url, body) {
+  const r = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body || {}) });
+  return r.json();
+}
+function esc(s) { return String(s == null ? '' : s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
+function fmtTime(iso) { try { return new Date(iso).toLocaleString('en-CA', { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }); } catch (e) { return ''; } }
+
+async function loadConvos() {
+  const convos = await jget('/api/conversations');
+  const ul = document.getElementById('convoList');
+  ul.innerHTML = convos.map(c => {
+    const lm = c.lastMessage ? (c.lastMessage.direction === 'out' ? 'You: ' : '') + c.lastMessage.body : '';
+    return '<li data-phone="' + esc(c.phone) + '" class="' + (c.phone === activePhone ? 'active' : '') + '">' +
+      '<span class="nm">' + esc(c.name) + '</span>' +
+      (c.needsHuman ? '<span class="flag human">NEEDS YOU</span>' : '') +
+      '<div class="ph">' + esc(c.phone) + '</div>' +
+      '<div class="lm">' + esc(lm.slice(0, 80)) + '</div></li>';
+  }).join('');
+  ul.querySelectorAll('li').forEach(li => li.addEventListener('click', () => selectConvo(li.dataset.phone)));
+}
+
+async function selectConvo(phone) {
+  activePhone = phone;
+  const data = await jget('/api/conversations/' + encodeURIComponent(phone));
+  document.getElementById('threadTitle').textContent = phone;
+  document.getElementById('messages').innerHTML = data.messages.map(m =>
+    '<div class="msg ' + m.direction + '">' + esc(m.body) + '<span class="t">' + fmtTime(m.at) + '</span></div>'
+  ).join('');
+  document.getElementById('replyBox').style.display = 'flex';
+  const box = document.getElementById('messages');
+  box.scrollTop = box.scrollHeight;
+  loadConvos();
+}
+
+async function loadTickets() {
+  const tickets = await jget('/api/tickets');
+  const ul = document.getElementById('ticketList');
+  const list = tickets.filter(t => {
+    if (ticketFilter === 'all') return true;
+    if (ticketFilter === 'new') return t.status === 'new';
+    return t.kind === ticketFilter;
+  });
+  ul.innerHTML = list.map(t =>
+    '<li class="ticket"><span class="id">' + esc(t.id) + '</span>' +
+    '<span class="badge ' + t.kind + '">' + t.kind + '</span>' +
+    '<span class="badge ' + t.urgency + '">' + t.urgency + '</span>' +
+    '<span class="badge ' + t.status + '">' + t.status + '</span>' +
+    (t.landlordDecision ? '<span class="badge ' + t.landlordDecision + '">' + t.landlordDecision + '</span>' : '') +
+    (t.awaitingLandlord ? '<span class="badge awaiting">awaiting landlord</span>' : '') +
+    '<div class="sum">' + esc(t.summary) + '</div>' +
+    '<div class="meta">' + esc(t.tenantName) + ' · ' + esc(t.phone) + ' · ' + fmtTime(t.createdAt) + '</div>' +
+    (t.kind === 'maintenance' ? landlordBlock(t) : '') +
+    '<div class="actions">' +
+      (t.status === 'new' ? '<button data-id="' + t.id + '" data-s="dispatched">Dispatch</button>' : '') +
+      (t.status !== 'closed' ? '<button class="ghost" data-id="' + t.id + '" data-s="closed">Close</button>' : '') +
+    '</div></li>'
+  ).join('') || '<li style="color:#a1a1aa;font-size:13px">No tickets yet.</li>';
+  ul.querySelectorAll('button[data-s]').forEach(b => b.addEventListener('click', async () => {
+    await jpost('/api/tickets/' + b.dataset.id, { status: b.dataset.s });
+    loadTickets();
+  }));
+  ul.querySelectorAll('button[data-act]').forEach(b => b.addEventListener('click', () => landlordAction(b)));
+}
+
+function landlordBlock(t) {
+  const sent = t.landlordNotifiedAt ? 'Summary sent ' + fmtTime(t.landlordNotifiedAt) : 'Not sent yet';
+  return '<div class="lsec">' +
+    '<div class="lrow">' +
+      '<input data-k="landlordName" placeholder="Landlord name" value="' + esc(t.landlordName) + '">' +
+      '<input data-k="landlordPhone" placeholder="Landlord WhatsApp no." value="' + esc(t.landlordPhone) + '">' +
+      '<input data-k="unit" placeholder="Unit" value="' + esc(t.unit) + '">' +
+      '<button class="ghost" data-act="save-ll" data-id="' + t.id + '">Save</button>' +
+    '</div>' +
+    '<div class="lrow">' +
+      '<button class="ghost" data-act="preview-ll" data-id="' + t.id + '">Preview summary</button>' +
+      (t.landlordPhone ? '<button data-act="send-ll" data-id="' + t.id + '">Send to landlord</button>' : '') +
+    '</div>' +
+    '<div class="lmeta">' + sent + '</div>' +
+    '<div class="lprev" style="display:none"></div>' +
+  '</div>';
+}
+
+async function landlordAction(b) {
+  const id = b.dataset.id;
+  const card = b.closest('.ticket');
+  if (b.dataset.act === 'save-ll') {
+    const body = {};
+    card.querySelectorAll('input[data-k]').forEach(i => { body[i.dataset.k] = i.value.trim(); });
+    await jpost('/api/tickets/' + id + '/landlord', body);
+    loadTickets();
+  } else if (b.dataset.act === 'preview-ll') {
+    const data = await jget('/api/tickets/' + id + '/landlord-summary');
+    const box = card.querySelector('.lprev');
+    box.style.display = 'block';
+    box.textContent = data.text;
+  } else if (b.dataset.act === 'send-ll') {
+    if (!confirm('Send this summary to the landlord on WhatsApp?')) return;
+    const r = await jpost('/api/tickets/' + id + '/send-to-landlord', {});
+    if (r.error) alert(r.error); else loadTickets();
+  }
+}
+
+document.getElementById('sendReply').addEventListener('click', async () => {
+  const ta = document.getElementById('replyText');
+  const text = ta.value.trim();
+  if (!text || !activePhone) return;
+  ta.value = '';
+  await jpost('/api/conversations/' + encodeURIComponent(activePhone) + '/reply', { text });
+  selectConvo(activePhone);
+});
+
+document.querySelectorAll('#ticketFilters button').forEach(b => b.addEventListener('click', () => {
+  document.querySelectorAll('#ticketFilters button').forEach(x => x.classList.remove('on'));
+  b.classList.add('on');
+  ticketFilter = b.dataset.f;
+  loadTickets();
+}));
+
+loadConvos();
+loadTickets();
+setInterval(() => { loadConvos(); loadTickets(); if (activePhone) selectConvo(activePhone); }, 8000);
+</script>
+</body>
+</html>
