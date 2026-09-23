@@ -60,21 +60,49 @@ function updateConversation(phone, patch) {
   return convo;
 }
 
-function addMessage(phone, direction, type, body) {
+function addMessage(phone, direction, type, body, opts) {
   const data = load();
   const convo = data.conversations[phone] || {
     phone, name: 'Unknown', state: 'idle', issue: null, exchanges: 0, messages: [],
   };
-  convo.messages.push({
+  const msg = {
     direction, // 'in' | 'out'
     type, // 'text' | 'image' | 'note'
     body: body || '',
     at: new Date().toISOString(),
-  });
+    // Outbound tracking (set when we send via WhatsApp):
+    waId: (opts && opts.waId) || null, // WhatsApp message id (wamid.*)
+    status: (opts && opts.status) || null, // sent | delivered | read | failed
+    statusError: (opts && opts.statusError) || null,
+  };
+  convo.messages.push(msg);
   if (convo.messages.length > 200) convo.messages = convo.messages.slice(-200);
   convo.updatedAt = new Date().toISOString();
   data.conversations[phone] = convo;
   save(data);
+  return convo.messages.length - 1; // index of the stored message
+}
+
+function updateMessage(phone, index, patch) {
+  const data = load();
+  const convo = data.conversations[phone];
+  if (!convo || !convo.messages[index]) return null;
+  Object.assign(convo.messages[index], patch);
+  convo.updatedAt = new Date().toISOString();
+  save(data);
+  return convo.messages[index];
+}
+
+function findMessageByWaId(waId) {
+  if (!waId) return null;
+  const data = load();
+  for (const phone of Object.keys(data.conversations)) {
+    const messages = data.conversations[phone].messages || [];
+    for (let i = 0; i < messages.length; i++) {
+      if (messages[i].waId === waId) return { phone, index: i, message: messages[i] };
+    }
+  }
+  return null;
 }
 
 function createTicket(fields) {
@@ -163,6 +191,8 @@ module.exports = {
   getConversation,
   updateConversation,
   addMessage,
+  updateMessage,
+  findMessageByWaId,
   createTicket,
   listTickets,
   getTicket,

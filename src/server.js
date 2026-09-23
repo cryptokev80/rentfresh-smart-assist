@@ -16,6 +16,7 @@ const path = require('path');
 const store = require('./store');
 const wa = require('./whatsapp');
 const triage = require('./triage');
+const msgStatus = require('./status');
 
 const app = express();
 // Capture the raw body so we can verify Meta's X-Hub-Signature-256.
@@ -108,6 +109,13 @@ app.post('/webhook', (req, res) => {
           for (const msg of value.messages || []) {
             await handleMessage(value, msg).catch((e) => console.error('handle error:', e.message));
           }
+          for (const st of value.statuses || []) {
+            try {
+              msgStatus.applyStatus(store, logEvent, msgStatus.normalizeStatus(st));
+            } catch (e) {
+              console.error('status error:', e.message);
+            }
+          }
         }
       }
     } catch (err) {
@@ -117,11 +125,15 @@ app.post('/webhook', (req, res) => {
 });
 
 async function reply(to, text) {
-  store.addMessage(to, 'out', 'text', text);
+  const idx = store.addMessage(to, 'out', 'text', text);
   try {
     const result = await wa.sendText(to, text);
-    logEvent({ event: 'outbound', to, ok: true, dryRun: !!(result && result.dryRun) });
+    const waId = result && result.messages && result.messages[0] ? result.messages[0].id : null;
+    if (waId) store.updateMessage(to, idx, { waId, status: 'sent' });
+    logEvent({ event: 'outbound', to, ok: true, dryRun: !!(result && result.dryRun), waId: waId || null });
   } catch (err) {
+    store.updateMessage(to, idx, { status: 'failed', statusError: err.message });
+    store.updateConversation(to, { needsHuman: true }); // a reply that never sent needs Kevin's eyes
     logEvent({ event: 'outbound', to, ok: false, error: err.message });
   }
 }
