@@ -5,7 +5,7 @@
  * Set DRY_RUN=true to log outgoing messages instead of sending them.
  */
 
-const GRAPH_VERSION = 'v21.0';
+const GRAPH_VERSION = 'v26.0';
 const GRAPH = 'https://graph.facebook.com/' + GRAPH_VERSION;
 
 function dryRun() {

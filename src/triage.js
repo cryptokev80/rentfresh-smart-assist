@@ -442,6 +442,7 @@ function landlordSummaryMessage(ticket) {
   }
   lines.push('');
   lines.push('Recommended next step: ' + (NEXT_STEP[ticket.urgency] || NEXT_STEP.routine));
+  lines.push('Auto-approve limit on file: $' + (ticket.autoApproveLimit || 300) + '.');
   lines.push('Kevin will confirm the quote with you before anything is booked.');
   lines.push('');
   lines.push('Reply APPROVE to go ahead, or DECLINE to hold.');

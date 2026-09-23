@@ -13,7 +13,7 @@ const DATA_DIR = process.env.DATA_DIR || path.join(__dirname, '..');
 const DATA_FILE = path.join(DATA_DIR, 'data.json');
 
 function blank() {
-  return { conversations: {}, tickets: [], ticketSeq: 1000 };
+  return { conversations: {}, tickets: [], ticketSeq: 1000, landlordPolicies: {} };
 }
 
 function load() {
@@ -187,15 +187,35 @@ function getMessages(phone) {
   return convo ? convo.messages : [];
 }
 
+// Per-landlord spending policy. Kevin sets the default ($300); individual
+// landlords can override. Keyed by landlord phone (digits only).
+function getLandlordPolicy(phone) {
+  const data = load();
+  const all = data.landlordPolicies || {};
+  return Object.assign({ autoApproveLimit: 300 }, all[String(phone || '')] || {});
+}
+
+function setLandlordPolicy(phone, patch) {
+  const data = load();
+  data.landlordPolicies = data.landlordPolicies || {};
+  const key = String(phone || '');
+  data.landlordPolicies[key] = Object.assign({}, data.landlordPolicies[key], patch);
+  save(data);
+  return getLandlordPolicy(key);
+}
+
 // One-shot test-data cleanup (used before real tenants go live).
-// Returns counts of what was removed.
+// Returns counts of what was removed. Landlord policies are business config,
+// not test data, so they survive the wipe.
 function clearAllData() {
   const data = load();
   const cleared = {
     conversations: Object.keys(data.conversations).length,
     tickets: data.tickets.length,
   };
-  save(blank());
+  const kept = blank();
+  kept.landlordPolicies = data.landlordPolicies || {};
+  save(kept);
   return cleared;
 }
 
@@ -213,5 +233,7 @@ module.exports = {
   setTicketStatus,
   listConversations,
   getMessages,
+  getLandlordPolicy,
+  setLandlordPolicy,
   clearAllData,
 };

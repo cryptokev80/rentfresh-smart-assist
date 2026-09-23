@@ -18,6 +18,7 @@ const wa = require('./whatsapp');
 const triage = require('./triage');
 const msgStatus = require('./status');
 const alerts = require('./alerts');
+const policies = require('./policies');
 
 const app = express();
 // Capture the raw body so we can verify Meta's X-Hub-Signature-256.
@@ -155,8 +156,19 @@ app.post('/webhook', (req, res) => {
   })();
 });
 
-async function reply(to, text) {
-  const idx = store.addMessage(to, 'out', 'text', text);
+async function reply(to, text, opts) {
+  // After-hours note: appended at most once per day per conversation so it
+  // informs without spamming every reply.
+  let out = text;
+  if (opts && opts.hoursNote) {
+    const day = policies.torontoDayKey(new Date());
+    const convo = store.getConversation(to);
+    if (convo.hoursNoteDay !== day) {
+      out += '\n\n' + policies.afterHoursNote();
+      store.updateConversation(to, { hoursNoteDay: day });
+    }
+  }
+  const idx = store.addMessage(to, 'out', 'text', out);
   try {
     const result = await wa.sendText(to, text);
     const waId = result && result.messages && result.messages[0] ? result.messages[0].id : null;
@@ -178,19 +190,24 @@ async function handleMessage(value, msg) {
   const contact = value.contacts && value.contacts[0];
   const name = (contact && contact.profile && contact.profile.name) || 'Unknown';
   const convo = store.getConversation(from, name);
+  // Business-hours policy: after hours the bot still answers and collects
+  // details, with a note about when the team replies. Emergencies always
+  // escalate immediately, note or not.
+  const afterHours = !policies.isBusinessHours();
 
   if (msg.type === 'text' && msg.text && msg.text.body) {
     store.addMessage(from, 'in', 'text', msg.text.body);
-    await handleText(from, convo, msg.text.body);
+    await handleText(from, convo, msg.text.body, { afterHours });
   } else if (msg.type === 'image' && msg.image) {
-    await handleImage(from, convo, msg);
+    await handleImage(from, convo, msg, { afterHours });
   } else {
     store.addMessage(from, 'in', msg.type || 'unknown', '');
-    await reply(from, 'Thanks for messaging RentFresh. Could you describe that in a text message? A photo helps too if it is a maintenance issue.');
+    await reply(from, 'Thanks for messaging RentFresh. Could you describe that in a text message? A photo helps too if it is a maintenance issue.', { hoursNote: afterHours });
   }
 }
 
-async function handleText(from, convo, text) {
+async function handleText(from, convo, text, ctx) {
+  const afterHours = !!(ctx && ctx.afterHours);
   // 1. Emergency always wins, regardless of intent.
   const result = triage.classify(text);
   logEvent({
@@ -208,6 +225,7 @@ async function handleText(from, convo, text) {
     await reply(from, 'Emergency ticket ' + ticket.id + ' created. The team has been notified.');
     store.updateConversation(from, { state: 'idle', issue: null, lead: null, exchanges: 0 });
     await flagForKevin(from, 'emergency ticket ' + ticket.id + ' created');
+    policies.startEmergencyDispatch(store, ticket);
     return;
   }
 
@@ -221,14 +239,14 @@ async function handleText(from, convo, text) {
 
   // 3. Explicit human handoff.
   if (triage.wantsHuman(text)) {
-    await reply(from, "Of course. I've flagged this for Kevin and he'll pick it up personally.");
+    await reply(from, "Of course. I've flagged this for Kevin and he'll pick it up personally.", { hoursNote: afterHours });
     await flagForKevin(from, 'human handoff requested');
     return;
   }
 
   // 4. Continuing an in-progress flow.
-  if (convo.state === 'awaiting_info' && convo.issue) return finishTriage(from, convo, text);
-  if (convo.state === 'awaiting_lead' && convo.lead) return finishLead(from, convo, text);
+  if (convo.state === 'awaiting_info' && convo.issue) return finishTriage(from, convo, text, ctx);
+  if (convo.state === 'awaiting_lead' && convo.lead) return finishLead(from, convo, text, ctx);
 
   // 4b. Simple acknowledgment ("ok", "thanks") with no active flow:
   // close politely instead of starting a brand-new triage.
@@ -243,7 +261,7 @@ async function handleText(from, convo, text) {
       state: 'awaiting_lead', exchanges: 1,
       lead: { firstMessage: text },
     });
-    await reply(from, triage.leadQuestionsMessage());
+    await reply(from, triage.leadQuestionsMessage(), { hoursNote: afterHours });
     return;
   }
 
@@ -253,7 +271,7 @@ async function handleText(from, convo, text) {
   // for a maintenance bot since Kevin reviews every conversation anyway.
   if (triage.isGeneralInquiry(text)) {
     store.updateConversation(from, { state: 'idle', issue: null, lead: null, exchanges: 0 });
-    await reply(from, triage.generalReplyMessage());
+    await reply(from, triage.generalReplyMessage(), { hoursNote: afterHours });
     return;
   }
 
@@ -266,10 +284,11 @@ async function handleText(from, convo, text) {
       firstMessage: text, photoIds: [],
     },
   });
-  await reply(from, triage.questionsMessage(result));
+  await reply(from, triage.questionsMessage(result), { hoursNote: afterHours });
 }
 
-async function finishTriage(from, convo, text) {
+async function finishTriage(from, convo, text, ctx) {
+  const afterHours = !!(ctx && ctx.afterHours);
   const issue = convo.issue;
   const combined = issue.firstMessage + '\nTenant added: ' + text;
   const result = triage.classify(combined);
@@ -281,10 +300,11 @@ async function finishTriage(from, convo, text) {
   store.updateConversation(from, { state: 'idle', issue: null, exchanges: 0 });
   let msg = triage.confirmationMessage(ticket);
   if (result.diyTip) msg += '\n\nSafe to try in the meantime: ' + result.diyTip;
-  await reply(from, msg);
+  await reply(from, msg, { hoursNote: afterHours });
 }
 
-async function finishLead(from, convo, text) {
+async function finishLead(from, convo, text, ctx) {
+  const afterHours = !!(ctx && ctx.afterHours);
   const ticket = store.createTicket({
     phone: from, tenantName: convo.name, kind: 'lead',
     trade: 'general', urgency: 'routine',
@@ -294,7 +314,8 @@ async function finishLead(from, convo, text) {
   await flagForKevin(from, 'new landlord lead (' + ticket.id + ')');
   await reply(
     from,
-    "Got it, thanks. I've passed your details to Kevin and he'll reply personally shortly. Your reference is " + ticket.id + '.'
+    "Got it, thanks. I've passed your details to Kevin and he'll reply personally shortly. Your reference is " + ticket.id + '.',
+    { hoursNote: afterHours }
   );
 }
 
@@ -323,7 +344,8 @@ async function handleLandlordReply(from, convo, text, ticket) {
   await reply(from, 'Thanks, I have passed your message to Kevin and he will confirm the next step with you shortly.');
 }
 
-async function handleImage(from, convo, msg) {
+async function handleImage(from, convo, msg, ctx) {
+  const afterHours = !!(ctx && ctx.afterHours);
   const caption = (msg.image && msg.image.caption) || '';
   const mediaId = msg.image && msg.image.id;
   store.addMessage(from, 'in', 'image', caption ? '[photo] ' + caption : '[photo]');
@@ -357,7 +379,7 @@ async function handleImage(from, convo, msg) {
         photoIds: mediaId ? [mediaId] : [],
       });
       store.updateConversation(from, { state: 'idle', issue: null });
-      await reply(from, 'Thanks for the photo. ' + (analysis.likely_issue ? 'This looks like ' + analysis.likely_issue + '. ' : '') + triage.confirmationMessage(ticket));
+      await reply(from, 'Thanks for the photo. ' + (analysis.likely_issue ? 'This looks like ' + analysis.likely_issue + '. ' : '') + triage.confirmationMessage(ticket), { hoursNote: afterHours });
       return;
     }
     store.updateConversation(from, {
@@ -373,7 +395,7 @@ async function handleImage(from, convo, msg) {
     let m = 'Thanks for the photo. ';
     if (analysis.likely_issue) m += 'This looks like ' + analysis.likely_issue + '. ';
     m += 'Two quick questions:\n' + questions.map((q, i) => (i + 1) + '. ' + q).join('\n');
-    await reply(from, m);
+    await reply(from, m, { hoursNote: afterHours });
     return;
   }
 
@@ -387,7 +409,7 @@ async function handleImage(from, convo, msg) {
       photoIds: mediaId ? [mediaId] : [],
     },
   });
-  await reply(from, "Thanks for the photo, I've attached it to your file. In one sentence, what's the problem?");
+  await reply(from, "Thanks for the photo, I've attached it to your file. In one sentence, what's the problem?", { hoursNote: afterHours });
 }
 
 // --- Inbox + API ---------------------------------------------------------------
@@ -431,16 +453,31 @@ app.post('/api/admin/clear-test-data', auth, (req, res) => {
 
 // Landlord loop: Kevin attaches the landlord to a ticket, previews the
 // tenant summary, and sends it to the landlord's own WhatsApp chat.
+// Accepts an optional autoApproveLimit (per-landlord spending policy;
+// defaults to the policy default and is remembered for that landlord).
 app.post('/api/tickets/:id/landlord', auth, (req, res) => {
   const body = req.body || {};
   const digits = String(body.landlordPhone || '').replace(/\D/g, '');
-  const ticket = store.updateTicket(req.params.id, {
+  const ticket = store.getTicket(req.params.id);
+  if (!ticket) return res.status(404).json({ error: 'not found' });
+  let limit = null;
+  if (digits) {
+    if (body.autoApproveLimit !== undefined && body.autoApproveLimit !== null && body.autoApproveLimit !== '') {
+      const n = parseInt(body.autoApproveLimit, 10);
+      if (!isNaN(n) && n > 0) {
+        store.setLandlordPolicy(digits, { autoApproveLimit: n });
+        limit = n;
+      }
+    }
+    if (limit === null) limit = store.getLandlordPolicy(digits).autoApproveLimit;
+  }
+  const updated = store.updateTicket(req.params.id, {
     landlordName: body.landlordName || null,
     landlordPhone: digits || null,
     unit: body.unit || null,
+    autoApproveLimit: limit,
   });
-  if (!ticket) return res.status(404).json({ error: 'not found' });
-  res.json(ticket);
+  res.json(updated);
 });
 
 app.get('/api/tickets/:id/landlord-summary', auth, (req, res) => {
@@ -468,6 +505,13 @@ app.post('/api/tickets/:id/send-to-landlord', auth, async (req, res) => {
 });
 
 app.get('/health', (req, res) => res.json({ ok: true, dryRun: wa.dryRun(), commit: COMMIT }));
+
+// Refuse to serve production traffic without webhook signature verification.
+// Railway sets RAILWAY_ENVIRONMENT; local dev/test are unaffected.
+if (!APP_SECRET && process.env.RAILWAY_ENVIRONMENT && process.env.ALLOW_INSECURE_STARTUP !== 'true') {
+  console.error('FATAL: WHATSAPP_APP_SECRET is not set on Railway — refusing to start without webhook signature verification.');
+  process.exit(1);
+}
 
 app.listen(PORT, () => {
   console.log('Smart Assist listening on :' + PORT + (wa.dryRun() ? ' (DRY_RUN: messages logged, not sent)' : ''));
