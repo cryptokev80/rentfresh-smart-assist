@@ -187,6 +187,18 @@ function getMessages(phone) {
   return convo ? convo.messages : [];
 }
 
+// One-shot test-data cleanup (used before real tenants go live).
+// Returns counts of what was removed.
+function clearAllData() {
+  const data = load();
+  const cleared = {
+    conversations: Object.keys(data.conversations).length,
+    tickets: data.tickets.length,
+  };
+  save(blank());
+  return cleared;
+}
+
 module.exports = {
   getConversation,
   updateConversation,
@@ -201,4 +213,5 @@ module.exports = {
   setTicketStatus,
   listConversations,
   getMessages,
+  clearAllData,
 };

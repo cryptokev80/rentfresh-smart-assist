@@ -67,7 +67,17 @@ check('failed stores error', failedMsg.statusError === '131026: Message undelive
 check('failed flags needsHuman', store.getConversation(phone).needsHuman === true);
 check('applyStatus returns phone', ret === phone);
 
-// --- applyStatus: unknown waId logs unmatched, changes nothing ---
+// --- applyStatus: onFailed callback fires on failure ---
+const idx3 = store.addMessage(phone, 'out', 'text', 'Third test');
+store.updateMessage(phone, idx3, { waId: 'wamid.ghi', status: 'sent' });
+let cbArgs = null;
+msgStatus.applyStatus(store, logEvent, msgStatus.normalizeStatus({
+  id: 'wamid.ghi', status: 'failed', recipient_id: phone,
+  errors: [{ code: 131047, title: 'Re-engagement required' }],
+}), (p, e) => { cbArgs = { p, e }; });
+check('onFailed callback fires with phone and error',
+  !!cbArgs && cbArgs.p === phone && cbArgs.e === '131047: Re-engagement required');
+check('failed still flags needsHuman with callback', store.getConversation(phone).needsHuman === true);
 const before = events.length;
 const ret2 = msgStatus.applyStatus(store, logEvent, msgStatus.normalizeStatus({ id: 'wamid.ghost', status: 'read' }));
 check('unknown waId returns null', ret2 === null);

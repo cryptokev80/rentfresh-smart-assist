@@ -17,6 +17,7 @@ const store = require('./store');
 const wa = require('./whatsapp');
 const triage = require('./triage');
 const msgStatus = require('./status');
+const alerts = require('./alerts');
 
 const app = express();
 // Capture the raw body so we can verify Meta's X-Hub-Signature-256.
@@ -37,6 +38,36 @@ function logEvent(obj) {
   } catch (e) {
     console.log('[logEvent failed]', e.message);
   }
+}
+
+// Flag a conversation for Kevin and email him, but only on the false -> true
+// transition: one escalation, one alert. Never throws: alerting must not
+// break message handling.
+async function flagForKevin(phone, reason) {
+  let newly = false;
+  try {
+    newly = alerts.flagNeedsHuman(store, phone, reason);
+  } catch (e) {
+    console.error('flag error:', e.message);
+    return;
+  }
+  if (!newly) return;
+  try {
+    const r = await alerts.sendNeedsHumanAlert(store, phone, reason);
+    logEvent({ event: 'alert', kind: 'needs_human', to: phone, reason, sent: r.sent, skipped: r.reason || null });
+  } catch (e) {
+    console.error('alert error:', e.message);
+    logEvent({ event: 'alert', kind: 'needs_human', to: phone, reason, sent: false, error: e.message });
+  }
+}
+
+// A reply Meta reports as failed: email Kevin. Each failure is distinct,
+// so this alerts every time rather than only on transition.
+function onMessageFailed(phone, error) {
+  alerts
+    .sendNeedsHumanAlert(store, phone, 'a reply failed to send (' + (error || 'unknown error') + ')')
+    .then((r) => logEvent({ event: 'alert', kind: 'needs_human', to: phone, reason: 'failed_status', sent: r.sent, skipped: r.reason || null }))
+    .catch((e) => logEvent({ event: 'alert', kind: 'needs_human', to: phone, reason: 'failed_status', sent: false, error: e.message }));
 }
 
 // --- Webhook signature verification (Meta X-Hub-Signature-256) ----------------
@@ -111,7 +142,7 @@ app.post('/webhook', (req, res) => {
           }
           for (const st of value.statuses || []) {
             try {
-              msgStatus.applyStatus(store, logEvent, msgStatus.normalizeStatus(st));
+              msgStatus.applyStatus(store, logEvent, msgStatus.normalizeStatus(st), onMessageFailed);
             } catch (e) {
               console.error('status error:', e.message);
             }
@@ -133,7 +164,7 @@ async function reply(to, text) {
     logEvent({ event: 'outbound', to, ok: true, dryRun: !!(result && result.dryRun), waId: waId || null });
   } catch (err) {
     store.updateMessage(to, idx, { status: 'failed', statusError: err.message });
-    store.updateConversation(to, { needsHuman: true }); // a reply that never sent needs Kevin's eyes
+    await flagForKevin(to, 'a reply failed to send');
     logEvent({ event: 'outbound', to, ok: false, error: err.message });
   }
 }
@@ -175,7 +206,8 @@ async function handleText(from, convo, text) {
       summary: result.summary, emergencyRule: result.ruleId,
     });
     await reply(from, 'Emergency ticket ' + ticket.id + ' created. The team has been notified.');
-    store.updateConversation(from, { state: 'idle', issue: null, lead: null, exchanges: 0, needsHuman: true });
+    store.updateConversation(from, { state: 'idle', issue: null, lead: null, exchanges: 0 });
+    await flagForKevin(from, 'emergency ticket ' + ticket.id + ' created');
     return;
   }
 
@@ -190,7 +222,7 @@ async function handleText(from, convo, text) {
   // 3. Explicit human handoff.
   if (triage.wantsHuman(text)) {
     await reply(from, "Of course. I've flagged this for Kevin and he'll pick it up personally.");
-    store.updateConversation(from, { needsHuman: true });
+    await flagForKevin(from, 'human handoff requested');
     return;
   }
 
@@ -258,7 +290,8 @@ async function finishLead(from, convo, text) {
     trade: 'general', urgency: 'routine',
     summary: 'New lead: "' + convo.lead.firstMessage + '" Details: "' + text + '"',
   });
-  store.updateConversation(from, { state: 'idle', lead: null, exchanges: 0, needsHuman: true });
+  store.updateConversation(from, { state: 'idle', lead: null, exchanges: 0 });
+  await flagForKevin(from, 'new landlord lead (' + ticket.id + ')');
   await reply(
     from,
     "Got it, thanks. I've passed your details to Kevin and he'll reply personally shortly. Your reference is " + ticket.id + '.'
@@ -269,7 +302,7 @@ async function handleLandlordReply(from, convo, text, ticket) {
   const decision = triage.parseLandlordDecision(text);
   if (decision === 'approved') {
     store.updateTicket(ticket.id, { landlordDecision: 'approved', awaitingLandlord: false });
-    store.updateConversation(from, { needsHuman: true }); // Kevin sees it and dispatches
+    await flagForKevin(from, 'landlord approved ' + ticket.id); // Kevin sees it and dispatches
     await reply(from, 'Approved, thanks. Kevin will dispatch the pro and keep you posted. (Ticket ' + ticket.id + ')');
     if (ticket.phone && ticket.phone !== from) {
       await reply(ticket.phone, 'Good news: your landlord approved the repair. We will be in touch shortly to schedule the visit.');
@@ -278,7 +311,7 @@ async function handleLandlordReply(from, convo, text, ticket) {
   }
   if (decision === 'declined') {
     store.updateTicket(ticket.id, { landlordDecision: 'declined', awaitingLandlord: false });
-    store.updateConversation(from, { needsHuman: true });
+    await flagForKevin(from, 'landlord declined ' + ticket.id);
     await reply(from, 'Understood, holding for now. Kevin has been notified. (Ticket ' + ticket.id + ')');
     if (ticket.phone && ticket.phone !== from) {
       await reply(ticket.phone, 'Your landlord asked us to hold for now. Kevin will follow up if anything changes.');
@@ -286,7 +319,7 @@ async function handleLandlordReply(from, convo, text, ticket) {
     return;
   }
   // Ambiguous reply: don't guess on money, let Kevin handle it.
-  store.updateConversation(from, { needsHuman: true });
+  await flagForKevin(from, 'landlord reply needs review (' + ticket.id + ')');
   await reply(from, 'Thanks, I have passed your message to Kevin and he will confirm the next step with you shortly.');
 }
 
@@ -309,7 +342,8 @@ async function handleImage(from, convo, msg) {
       summary: analysis.summary || 'Photo report with possible safety risk.',
       photoIds: mediaId ? [mediaId] : [],
     });
-    store.updateConversation(from, { state: 'idle', issue: null, needsHuman: true });
+    store.updateConversation(from, { state: 'idle', issue: null });
+    await flagForKevin(from, 'photo flagged as possible safety risk');
     return;
   }
 
@@ -386,6 +420,13 @@ app.post('/api/tickets/:id', auth, (req, res) => {
   const ticket = store.setTicketStatus(req.params.id, req.body && req.body.status);
   if (!ticket) return res.status(404).json({ error: 'not found' });
   res.json(ticket);
+});
+
+// One-shot test-data cleanup before real tenants. Basic-auth protected.
+app.post('/api/admin/clear-test-data', auth, (req, res) => {
+  const cleared = store.clearAllData();
+  logEvent({ event: 'admin', action: 'clear_test_data', conversations: cleared.conversations, tickets: cleared.tickets });
+  res.json({ ok: true, cleared });
 });
 
 // Landlord loop: Kevin attaches the landlord to a ticket, previews the

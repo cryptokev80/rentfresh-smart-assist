@@ -34,7 +34,7 @@ function normalizeStatus(st) {
   return { waId, status, error, recipient };
 }
 
-function applyStatus(store, logEvent, norm) {
+function applyStatus(store, logEvent, norm, onFailed) {
   if (!norm) return null;
   const found = store.findMessageByWaId(norm.waId);
   if (!found) {
@@ -48,7 +48,19 @@ function applyStatus(store, logEvent, norm) {
   }
   logEvent({ event: 'message_status', waId: norm.waId, status: norm.status, to: found.phone, error: norm.error });
   if (norm.status === 'failed') {
-    store.updateConversation(found.phone, { needsHuman: true });
+    store.updateConversation(found.phone, {
+      needsHuman: true,
+      needsHumanReason: 'message failed: ' + (norm.error || 'unknown'),
+      needsHumanAt: new Date().toISOString(),
+    });
+    // Each failed message is distinct, so the alert fires every time.
+    if (typeof onFailed === 'function') {
+      try {
+        onFailed(found.phone, norm.error);
+      } catch (e) {
+        logEvent({ event: 'message_status', waId: norm.waId, status: norm.status, to: found.phone, alertError: e.message });
+      }
+    }
   }
   return found.phone;
 }
