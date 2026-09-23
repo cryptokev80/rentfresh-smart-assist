@@ -203,7 +203,17 @@ async function handleText(from, convo, text) {
     return;
   }
 
-  // 6. Default: maintenance triage.
+  // 6. General business inquiry (greeting, "what do you do", hours,
+  // contact info): proper reply, no ticket. Anything unrecognized still
+  // falls through to maintenance triage below, which is the safer default
+  // for a maintenance bot since Kevin reviews every conversation anyway.
+  if (triage.isGeneralInquiry(text)) {
+    store.updateConversation(from, { state: 'idle', issue: null, lead: null, exchanges: 0 });
+    await reply(from, triage.generalReplyMessage());
+    return;
+  }
+
+  // 7. Default: maintenance triage.
   store.updateConversation(from, {
     state: 'awaiting_info', exchanges: 1,
     issue: {

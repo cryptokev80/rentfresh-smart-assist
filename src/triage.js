@@ -331,11 +331,50 @@ const LEAD_PATTERNS = [
 ];
 
 const PROBLEM_GUARD = /(leak|leaking|drip|broken|not working|clogged|mold|mould|no heat|no hot water|flood|sparking|smoke)/;
+// "What do you do?" is an about-question, not buying intent: keep it out of
+// the lead flow so it reaches the general route.
+const ABOUT_GUARD = /what do you (guys )?do/;
 
 function isLeadInquiry(text) {
   const padded = ' ' + String(text || '').toLowerCase() + ' ';
   if (PROBLEM_GUARD.test(padded)) return false; // problem reports stay in triage
+  if (ABOUT_GUARD.test(padded)) return false; // about-questions go general
   return LEAD_PATTERNS.some((p) => padded.includes(p));
+}
+
+// ---------------------------------------------------------------------------
+// General business inquiries: greetings, "what do you do", hours, contact
+// info. These used to fall through to maintenance triage; now they get a
+// proper reply and no ticket. Problem reports never match (PROBLEM_GUARD),
+// so "Hi, my sink is leaking" still goes to triage.
+// ---------------------------------------------------------------------------
+
+const GENERAL_PATTERNS = [
+  // greetings (padded matching keeps "hi" from firing inside "this"/"which")
+  ' hi ', 'hello', 'hey ', 'good morning', 'good afternoon', 'good evening',
+  // what is RentFresh / what do you do
+  'what is rentfresh', 'what do you do', 'what services', 'how does this work',
+  'tell me about', 'about rentfresh', 'who is this', 'wrong number',
+  // hours
+  'what are your hours', 'are you open', 'when are you open', 'hours of operation',
+  // contact info
+  'your phone number', 'your email', 'contact you', 'your address',
+  'where are you located',
+];
+
+function isGeneralInquiry(text) {
+  const padded = ' ' + String(text || '').toLowerCase() + ' ';
+  if (PROBLEM_GUARD.test(padded)) return false; // problem reports stay in triage
+  return GENERAL_PATTERNS.some((p) => padded.includes(p));
+}
+
+function generalReplyMessage() {
+  return (
+    'Hi, this is RentFresh Smart Assist. We handle maintenance for rental units across Toronto and the GTA: ' +
+    'tenants message us when something needs fixing, and we coordinate the repair with the landlord.\n\n' +
+    'If something needs fixing, just describe it and I will get the right pro on it. ' +
+    'If you are a landlord or property manager, tell me a bit about your properties and Kevin will follow up personally.'
+  );
 }
 
 const HUMAN_PATTERNS = [
@@ -430,6 +469,8 @@ module.exports = {
   questionsMessage,
   analyzeImageWithAI,
   isLeadInquiry,
+  isGeneralInquiry,
+  generalReplyMessage,
   wantsHuman,
   isAcknowledgment,
   leadQuestionsMessage,
