@@ -23,6 +23,8 @@ function route(text) {
   return 'triage';
 }
 
+const biz = require('../src/config');
+
 const cases = [
   // --- NEW: general business route ---
   ['Hi', 'general'],
@@ -31,7 +33,7 @@ const cases = [
   ['Good morning', 'general'],
   ['What are your hours?', 'general'],
   ['What do you do?', 'general'],
-  ['What is RentFresh?', 'general'],
+  ['What is ' + biz.businessName + '?', 'general'],
   ['How does this work?', 'general'],
   ['Who is this?', 'general'],
   ['Where are you located?', 'general'],
@@ -67,9 +69,10 @@ for (const [text, expected] of cases) {
 // The general reply must not promise quotes/prices over chat and must
 // point both tenants and landlords at a next step.
 const reply = triage.generalReplyMessage();
+const bizNameRe = new RegExp(biz.businessName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i');
 const replyChecks = [
-  ['mentions RentFresh', /rentfresh/i.test(reply)],
-  ['mentions Toronto/GTA', /toronto|gta/i.test(reply)],
+  ['mentions business name', bizNameRe.test(reply)],
+  ['mentions service area', new RegExp(biz.serviceArea.split(' ')[0], 'i').test(reply)],
   ['tenant next step', /describe it/i.test(reply)],
   ['landlord next step', /landlord or property manager/i.test(reply)],
 ];

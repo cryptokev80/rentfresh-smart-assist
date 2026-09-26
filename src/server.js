@@ -13,6 +13,8 @@
 const express = require('express');
 const crypto = require('crypto');
 const path = require('path');
+const fs = require('fs');
+const biz = require('./config');
 const store = require('./store');
 const wa = require('./whatsapp');
 const triage = require('./triage');
@@ -202,7 +204,7 @@ async function handleMessage(value, msg) {
     await handleImage(from, convo, msg, { afterHours });
   } else {
     store.addMessage(from, 'in', msg.type || 'unknown', '');
-    await reply(from, 'Thanks for messaging RentFresh. Could you describe that in a text message? A photo helps too if it is a maintenance issue.', { hoursNote: afterHours });
+    await reply(from, biz.fill(biz.messaging.unknownMedia), { hoursNote: afterHours });
   }
 }
 
@@ -222,7 +224,7 @@ async function handleText(from, convo, text, ctx) {
       trade: result.trade, urgency: 'emergency',
       summary: result.summary, emergencyRule: result.ruleId,
     });
-    await reply(from, 'Emergency ticket ' + ticket.id + ' created. The team has been notified.');
+    await reply(from, biz.fill(biz.messaging.emergencyTicketCreated, { ticketId: ticket.id }));
     store.updateConversation(from, { state: 'idle', issue: null, lead: null, exchanges: 0 });
     await flagForKevin(from, 'emergency ticket ' + ticket.id + ' created');
     policies.startEmergencyDispatch(store, ticket);
@@ -239,7 +241,7 @@ async function handleText(from, convo, text, ctx) {
 
   // 3. Explicit human handoff.
   if (triage.wantsHuman(text)) {
-    await reply(from, "Of course. I've flagged this for Kevin and he'll pick it up personally.", { hoursNote: afterHours });
+    await reply(from, biz.fill(biz.messaging.humanHandoff), { hoursNote: afterHours });
     await flagForKevin(from, 'human handoff requested');
     return;
   }
@@ -314,7 +316,7 @@ async function finishLead(from, convo, text, ctx) {
   await flagForKevin(from, 'new landlord lead (' + ticket.id + ')');
   await reply(
     from,
-    "Got it, thanks. I've passed your details to Kevin and he'll reply personally shortly. Your reference is " + ticket.id + '.',
+    biz.fill(biz.messaging.leadReceived, { ticketId: ticket.id }),
     { hoursNote: afterHours }
   );
 }
@@ -324,7 +326,7 @@ async function handleLandlordReply(from, convo, text, ticket) {
   if (decision === 'approved') {
     store.updateTicket(ticket.id, { landlordDecision: 'approved', awaitingLandlord: false });
     await flagForKevin(from, 'landlord approved ' + ticket.id); // Kevin sees it and dispatches
-    await reply(from, 'Approved, thanks. Kevin will dispatch the pro and keep you posted. (Ticket ' + ticket.id + ')');
+    await reply(from, biz.fill(biz.messaging.landlordApproved, { ticketId: ticket.id }));
     if (ticket.phone && ticket.phone !== from) {
       await reply(ticket.phone, 'Good news: your landlord approved the repair. We will be in touch shortly to schedule the visit.');
     }
@@ -333,7 +335,7 @@ async function handleLandlordReply(from, convo, text, ticket) {
   if (decision === 'declined') {
     store.updateTicket(ticket.id, { landlordDecision: 'declined', awaitingLandlord: false });
     await flagForKevin(from, 'landlord declined ' + ticket.id);
-    await reply(from, 'Understood, holding for now. Kevin has been notified. (Ticket ' + ticket.id + ')');
+    await reply(from, biz.fill(biz.messaging.landlordDeclined, { ticketId: ticket.id }));
     if (ticket.phone && ticket.phone !== from) {
       await reply(ticket.phone, 'Your landlord asked us to hold for now. Kevin will follow up if anything changes.');
     }
@@ -341,7 +343,7 @@ async function handleLandlordReply(from, convo, text, ticket) {
   }
   // Ambiguous reply: don't guess on money, let Kevin handle it.
   await flagForKevin(from, 'landlord reply needs review (' + ticket.id + ')');
-  await reply(from, 'Thanks, I have passed your message to Kevin and he will confirm the next step with you shortly.');
+  await reply(from, biz.fill(biz.messaging.landlordAmbiguous));
 }
 
 async function handleImage(from, convo, msg, ctx) {
@@ -414,8 +416,25 @@ async function handleImage(from, convo, msg, ctx) {
 
 // --- Inbox + API ---------------------------------------------------------------
 
+// Serve the inbox with business identity tokens filled in, so the UI carries
+// the configured brand without a rebuild per client.
+const INBOX_TOKENS = {
+  '{{BUSINESS_NAME}}': () => biz.businessName,
+  '{{ASSISTANT_NAME}}': () => biz.assistantName,
+  '{{OWNER_NAME}}': () => biz.ownerName,
+};
+
 app.get('/', auth, (req, res) => {
-  res.sendFile(path.join(__dirname, 'inbox.html'));
+  try {
+    let html = fs.readFileSync(path.join(__dirname, 'inbox.html'), 'utf8');
+    for (const [token, fn] of Object.entries(INBOX_TOKENS)) {
+      html = html.split(token).join(fn());
+    }
+    res.type('html').send(html);
+  } catch (e) {
+    console.error('inbox render failed:', e.message);
+    res.sendStatus(500);
+  }
 });
 
 app.get('/api/conversations', auth, (req, res) => {

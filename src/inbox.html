@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Smart Assist Inbox — RentFresh</title>
+<title>{{ASSISTANT_NAME}} Inbox - {{BUSINESS_NAME}}</title>
 <style>
   * { box-sizing: border-box; }
   body { font-family: -apple-system, system-ui, sans-serif; margin: 0; background: #f4f4f5; color: #18181b; }
@@ -64,7 +64,7 @@
 </head>
 <body>
 <header>
-  <h1>RentFresh Smart Assist</h1>
+  <h1>{{ASSISTANT_NAME}}</h1>
   <span>concierge MVP - AI triages, you dispatch</span>
 </header>
 <main>
@@ -76,7 +76,7 @@
     <h2 id="threadTitle">Select a conversation</h2>
     <div id="messages"></div>
     <div id="replyBox" style="display:none">
-      <textarea id="replyText" rows="2" placeholder="Reply as RentFresh..."></textarea>
+      <textarea id="replyText" rows="2" placeholder="Reply as {{BUSINESS_NAME}}..."></textarea>
       <button id="sendReply">Send</button>
     </div>
   </section>

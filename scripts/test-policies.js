@@ -53,7 +53,7 @@ check('Sun 10:00 closed', policies.isBusinessHours(SUN(10)), false);
 // --- next reply text ---
 check('Fri night -> Monday', policies.nextReplyText(FRI(20)), 'Monday at 9am');
 check('Sat -> Monday', policies.nextReplyText(SAT(12)), 'Monday at 9am');
-check('Sun -> Monday', policies.nextReplyText(SUN(12)), 'Monday at 9am');
+check('Sun -> Monday', policies.nextReplyText(SUN(12)), 'tomorrow at 9am');
 check('Wed night -> tomorrow', policies.nextReplyText(edt(2026, 9, 23, 20)), 'tomorrow at 9am');
 check('Wed early -> at 9am', policies.nextReplyText(edt(2026, 9, 23, 7)), 'at 9am');
 

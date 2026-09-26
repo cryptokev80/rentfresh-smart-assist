@@ -14,9 +14,11 @@
  * sendEmail touches the network.
  */
 
+const biz = require('./config');
+
 const RESEND_API_KEY = process.env.RESEND_API_KEY || '';
-const ALERT_EMAIL = process.env.ALERT_EMAIL || 'rentfreshteam@gmail.com';
-const ALERT_FROM = process.env.ALERT_FROM || 'RentFresh Alerts <onboarding@resend.dev>';
+const ALERT_EMAIL = process.env.ALERT_EMAIL || biz.alertEmail;
+const ALERT_FROM = process.env.ALERT_FROM || biz.alertFrom;
 const INBOX_URL =
   process.env.INBOX_URL ||
   (process.env.RAILWAY_PUBLIC_DOMAIN ? 'https://' + process.env.RAILWAY_PUBLIC_DOMAIN : '');
@@ -38,9 +40,9 @@ function recentTranscript(messages, n) {
 }
 
 function buildAlert({ phone, name, reason, messages }) {
-  const subject = 'NEEDS YOU: ' + reason + ' (' + phone + ')';
+  const subject = biz.fill(biz.messaging.alertSubject, { reason, phone });
   const lines = [
-    'RentFresh Smart Assist needs you.',
+    biz.fill(biz.messaging.alertIntro),
     '',
     'Reason: ' + reason,
     'From: ' + (name || 'Unknown') + ' (' + phone + ')',

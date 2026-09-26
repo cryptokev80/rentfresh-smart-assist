@@ -8,6 +8,8 @@
  * "likely / possible" language, and emergencies escalate to a human.
  */
 
+const biz = require('./config');
+
 const TRADE_LABELS = {
   plumbing: 'Plumbing',
   electrical: 'Electrical',
@@ -265,7 +267,7 @@ async function analyzeImageWithAI(imageBuffer, caption) {
     const model = process.env.AI_VISION_MODEL || 'gpt-4o-mini';
     const dataUri = 'data:image/jpeg;base64,' + imageBuffer.toString('base64');
     const prompt =
-      'You are a maintenance triage assistant for rental apartments in Toronto, Canada. ' +
+      'You are ' + biz.vision.context + '. ' +
       'Look at this photo of a maintenance issue' + (caption ? ' (tenant caption: "' + caption + '")' : '') + '. ' +
       'Respond with ONLY a JSON object, no other text: ' +
       '{"trade": one of plumbing|electrical|hvac|appliance|general, ' +
@@ -352,9 +354,9 @@ function isLeadInquiry(text) {
 const GENERAL_PATTERNS = [
   // greetings (padded matching keeps "hi" from firing inside "this"/"which")
   ' hi ', 'hello', 'hey ', 'good morning', 'good afternoon', 'good evening',
-  // what is RentFresh / what do you do
-  'what is rentfresh', 'what do you do', 'what services', 'how does this work',
-  'tell me about', 'about rentfresh', 'who is this', 'wrong number',
+  // what is this business / what do you do (business name comes from config)
+  'what is ' + biz.businessName.toLowerCase(), 'what do you do', 'what services', 'how does this work',
+  'tell me about', 'about ' + biz.businessName.toLowerCase(), 'who is this', 'wrong number',
   // hours
   'what are your hours', 'are you open', 'when are you open', 'hours of operation',
   // contact info
@@ -369,17 +371,13 @@ function isGeneralInquiry(text) {
 }
 
 function generalReplyMessage() {
-  return (
-    'Hi, this is RentFresh Smart Assist. We handle maintenance for rental units across Toronto and the GTA: ' +
-    'tenants message us when something needs fixing, and we coordinate the repair with the landlord.\n\n' +
-    'If something needs fixing, just describe it and I will get the right pro on it. ' +
-    'If you are a landlord or property manager, tell me a bit about your properties and Kevin will follow up personally.'
-  );
+  return biz.fill(biz.messaging.generalReply);
 }
 
 const HUMAN_PATTERNS = [
   'real person', 'human', 'talk to someone', 'speak to someone',
-  'talk to kevin', 'speak to kevin', 'kevin please', 'call me back',
+  'talk to ' + biz.ownerName.toLowerCase(), 'speak to ' + biz.ownerName.toLowerCase(),
+  biz.ownerName.toLowerCase() + ' please', 'call me back',
 ];
 
 function wantsHuman(text) {
@@ -414,13 +412,7 @@ function isAcknowledgment(text) {
 }
 
 function leadQuestionsMessage() {
-  return (
-    'Thanks for reaching out to RentFresh. So Kevin can give you an accurate quote, could you share:\n' +
-    '1. Your name\n' +
-    '2. The property address\n' +
-    '3. What you need done, and roughly when\n\n' +
-    'He quotes every job properly, so no prices over chat.'
-  );
+  return biz.fill(biz.messaging.leadQuestions);
 }
 
 // ---------------------------------------------------------------------------
@@ -432,9 +424,9 @@ function leadQuestionsMessage() {
 
 function landlordSummaryMessage(ticket) {
   const lines = [];
-  lines.push('RentFresh maintenance update' + (ticket.unit ? ' for ' + ticket.unit : ''));
+  lines.push(biz.fill(biz.messaging.landlordSummaryHeader, { businessName: biz.businessName }) + (ticket.unit ? ' for ' + ticket.unit : ''));
   lines.push('');
-  lines.push('Tenant: ' + (ticket.tenantName || 'Unknown'));
+  lines.push(biz.customerNoun.charAt(0).toUpperCase() + biz.customerNoun.slice(1) + ': ' + (ticket.tenantName || 'Unknown'));
   lines.push('Issue: ' + TRADE_LABELS[ticket.trade] + ' - ' + URGENCY_LABELS[ticket.urgency]);
   lines.push('What was reported: ' + (ticket.summary || 'No details yet.'));
   if (ticket.photoIds && ticket.photoIds.length) {
@@ -442,8 +434,8 @@ function landlordSummaryMessage(ticket) {
   }
   lines.push('');
   lines.push('Recommended next step: ' + (NEXT_STEP[ticket.urgency] || NEXT_STEP.routine));
-  lines.push('Auto-approve limit on file: $' + (ticket.autoApproveLimit || 300) + '.');
-  lines.push('Kevin will confirm the quote with you before anything is booked.');
+  lines.push('Auto-approve limit on file: $' + (ticket.autoApproveLimit || biz.autoApproveDefault) + '.');
+  lines.push(biz.fill(biz.messaging.landlordConfirmLine));
   lines.push('');
   lines.push('Reply APPROVE to go ahead, or DECLINE to hold.');
   return lines.join('\n');
