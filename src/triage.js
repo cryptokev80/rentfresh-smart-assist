@@ -103,6 +103,7 @@ const TRADE_KEYWORDS = {
     'drain', 'clog', 'clogged', 'pipe', 'pipes', 'shower', 'tub', 'bathtub',
     'valve', 'puddle', 'damp', 'water stain', 'water heater', 'hot water',
     'running water', 'low water pressure', 'no water', 'pouring',
+    'plumber', 'plumbing',
   ],
   electrical: [
     'outlet', 'socket', 'plug', 'breaker', 'breakers', 'power', 'electricity',
