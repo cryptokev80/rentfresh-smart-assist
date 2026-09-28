@@ -102,6 +102,26 @@
       <div class="lrow"><button class="ghost" id="saveLandlord">Save landlord</button></div>
       <div class="lmeta">Click a landlord to load them into the form.</div>
     </div>
+    <h2 style="margin-top:14px">Trades</h2>
+    <div id="tradeList"></div>
+    <div class="lsec">
+      <div class="lrow">
+        <input id="trName" placeholder="Name">
+        <input id="trTrade" placeholder="Trade (plumbing)">
+      </div>
+      <div class="lrow">
+        <input id="trPhone" placeholder="WhatsApp no.">
+        <input id="trCompany" placeholder="Company">
+      </div>
+      <div class="lrow"><input id="trEmail" placeholder="Email"></div>
+      <div class="lrow">
+        <input id="trHourly" placeholder="Hourly $ (info only)">
+        <input id="trMinHrs" placeholder="Min hours">
+      </div>
+      <div class="lrow"><input id="trAreas" placeholder="Service areas, comma separated"></div>
+      <div class="lrow"><button class="ghost" id="saveTrade">Save trade</button></div>
+      <div class="lmeta">A trade matches when the tenant's address contains one of their service areas (e.g. Toronto, Mississauga).</div>
+    </div>
   </section>
 </main>
 <script>
@@ -253,8 +273,10 @@ document.querySelectorAll('#ticketFilters button').forEach(b => b.addEventListen
 loadConvos();
 loadTickets();
 loadLandlords();
+loadTrades();
 document.getElementById('saveLandlord').addEventListener('click', saveLandlord);
-setInterval(() => { loadConvos(); loadTickets(); loadLandlords(); if (activePhone) selectConvo(activePhone); }, 8000);
+document.getElementById('saveTrade').addEventListener('click', saveTrade);
+setInterval(() => { loadConvos(); loadTickets(); loadLandlords(); loadTrades(); if (activePhone) selectConvo(activePhone); }, 8000);
 
 async function loadLandlords() {
   const lls = await jget('/api/landlords');
@@ -297,6 +319,50 @@ async function saveLandlord() {
   const r = await jpost('/api/landlords/' + phone, body);
   if (r.error) alert(r.error);
   else { loadLandlords(); loadTickets(); }
+}
+
+async function loadTrades() {
+  const trades = await jget('/api/trades');
+  const box = document.getElementById('tradeList');
+  box.innerHTML = trades.map(t =>
+    '<div class="ticket">' +
+    '<span class="id">' + esc(t.name) + '</span>' +
+    '<span class="badge maintenance">' + esc(t.trade) + '</span>' +
+    '<div class="meta">' + esc(t.phone) + (t.company ? ' · ' + esc(t.company) : '') + '</div>' +
+    (t.rates && (t.rates.hourly || t.rates.minimumHours)
+      ? '<div class="meta">' + (t.rates.hourly ? '$' + esc(t.rates.hourly) + '/hr' : '') +
+        (t.rates.minimumHours ? ' · ' + esc(t.rates.minimumHours) + ' hr min' : '') + ' (info only)</div>'
+      : '') +
+    (t.serviceAreas && t.serviceAreas.length ? '<div class="meta">' + esc(t.serviceAreas.join(', ')) + '</div>' : '') +
+    '</div>'
+  ).join('') || '<div style="color:#a1a1aa;font-size:12px">No trades yet.</div>';
+}
+
+async function saveTrade() {
+  const phone = document.getElementById('trPhone').value.replace(/\D/g, '');
+  const name = document.getElementById('trName').value.trim();
+  const trade = document.getElementById('trTrade').value.trim().toLowerCase();
+  if (!name || !trade) { alert('Name and trade required'); return; }
+  const hourly = parseFloat(document.getElementById('trHourly').value);
+  const minimumHours = parseFloat(document.getElementById('trMinHrs').value);
+  const rates = {};
+  if (isFinite(hourly) && hourly > 0) rates.hourly = hourly;
+  if (isFinite(minimumHours) && minimumHours > 0) rates.minimumHours = minimumHours;
+  const body = {
+    name,
+    trade,
+    phone,
+    company: document.getElementById('trCompany').value.trim() || undefined,
+    email: document.getElementById('trEmail').value.trim() || undefined,
+    rates: Object.keys(rates).length ? rates : undefined,
+    serviceAreas: document.getElementById('trAreas').value.split(',').map(s => s.trim()).filter(Boolean),
+  };
+  const r = await jpost('/api/trades', body);
+  if (r.error) alert(r.error);
+  else {
+    ['trName','trTrade','trPhone','trCompany','trEmail','trHourly','trMinHrs','trAreas'].forEach(id => { document.getElementById(id).value = ''; });
+    loadTrades();
+  }
 }
 </script>
 </body>
