@@ -167,10 +167,12 @@ async function reply(to, text) {
     const waId = result && result.messages && result.messages[0] ? result.messages[0].id : null;
     if (waId) store.updateMessage(to, idx, { waId, status: 'sent' });
     logEvent({ event: 'outbound', to, ok: true, dryRun: !!(result && result.dryRun), waId: waId || null });
+    return true;
   } catch (err) {
     store.updateMessage(to, idx, { status: 'failed', statusError: err.message });
     await flagForKevin(to, 'a reply failed to send');
     logEvent({ event: 'outbound', to, ok: false, error: err.message });
+    return false;
   }
 }
 
@@ -463,19 +465,27 @@ async function dispatchApprovedTicket(ticket) {
   const record = {
     flow: ticket.landlordDecision === 'auto-approved' ? 'nte-auto' : 'nte-approved',
     candidates: candidates.map((c) => ({ id: c.id, name: c.name })),
-    status: pro ? 'dispatched' : 'no-trade',
+    status: pro ? 'sending' : 'no-trade',
     dispatchedAt: new Date().toISOString(),
     proId: pro ? pro.id : null,
     proName: pro ? pro.name : null,
   };
-  store.updateTicket(ticket.id, {
-    dispatch: record,
-    status: pro ? 'dispatched' : ticket.status,
-  });
   if (pro && pro.phone) {
     store.getConversation(pro.phone, pro.name);
-    await reply(pro.phone, triage.proJobCardMessage(ticket, pro));
-    await flagForKevin(pro.phone, 'dispatched ' + ticket.id + ' to ' + pro.name);
+    const sent = await reply(pro.phone, triage.proJobCardMessage(ticket, pro));
+    // Only mark dispatched when Meta actually accepted the message. A
+    // failure (e.g. 131047 outside the 24h window) must not show as
+    // dispatched in the inbox.
+    record.status = sent ? 'dispatched' : 'failed';
+    if (!sent) record.error = 'WhatsApp send failed; see alert email for the Meta error';
+    store.updateTicket(ticket.id, {
+      dispatch: record,
+      status: sent ? 'dispatched' : ticket.status,
+    });
+    await flagForKevin(
+      pro.phone,
+      (sent ? 'dispatched ' : 'FAILED to dispatch ') + ticket.id + ' to ' + pro.name
+    );
   } else {
     await flagForKevin(
       ticket.phone || 'inbox',
