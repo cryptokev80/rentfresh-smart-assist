@@ -21,7 +21,6 @@ const triage = require('./triage');
 const msgStatus = require('./status');
 const alerts = require('./alerts');
 const policies = require('./policies');
-const relay = require('./relay');
 
 const app = express();
 // Capture the raw body so we can verify Meta's X-Hub-Signature-256.
@@ -159,45 +158,19 @@ app.post('/webhook', (req, res) => {
   })();
 });
 
-async function reply(to, text, opts) {
+async function reply(to, text) {
   // ProQue triages 24/7: every message gets an answer right away, no
   // business-hours note. Emergencies escalate immediately.
-  const idx = store.addMessage(to, 'out', 'text', text, opts);
+  const idx = store.addMessage(to, 'out', 'text', text);
   try {
     const result = await wa.sendText(to, text);
     const waId = result && result.messages && result.messages[0] ? result.messages[0].id : null;
     if (waId) store.updateMessage(to, idx, { waId, status: 'sent' });
     logEvent({ event: 'outbound', to, ok: true, dryRun: !!(result && result.dryRun), waId: waId || null });
-    return true;
   } catch (err) {
     store.updateMessage(to, idx, { status: 'failed', statusError: err.message });
     await flagForKevin(to, 'a reply failed to send');
     logEvent({ event: 'outbound', to, ok: false, error: err.message });
-    return false;
-  }
-}
-
-// Outbound photo/video (relay forwards). Mirrors reply(): logs first, then
-// sends; on failure the stored message is marked failed and Kevin is
-// flagged. Returns true only when Meta accepted the message.
-async function replyMedia(to, kind, buffer, mimeType, caption, opts) {
-  const idx = store.addMessage(to, 'out', kind, caption ? '[' + kind + '] ' + caption : '[' + kind + ']', opts);
-  try {
-    const up = await wa.uploadMedia(buffer, mimeType);
-    const mediaId = up && up.id;
-    if (!mediaId) throw new Error('media upload returned no id');
-    const result = kind === 'video'
-      ? await wa.sendVideo(to, mediaId, caption || '')
-      : await wa.sendImage(to, mediaId, caption || '');
-    const waId = result && result.messages && result.messages[0] ? result.messages[0].id : null;
-    if (waId) store.updateMessage(to, idx, { waId, status: 'sent' });
-    logEvent({ event: 'outbound', to, kind, ok: true, dryRun: !!(result && result.dryRun), waId: waId || null });
-    return true;
-  } catch (err) {
-    store.updateMessage(to, idx, { status: 'failed', statusError: err.message });
-    await flagForKevin(to, 'a ' + kind + ' failed to send');
-    logEvent({ event: 'outbound', to, kind, ok: false, error: err.message });
-    return false;
   }
 }
 
@@ -216,8 +189,8 @@ async function handleMessage(value, msg) {
   if (msg.type === 'text' && msg.text && msg.text.body) {
     store.addMessage(from, 'in', 'text', msg.text.body);
     await handleText(from, convo, msg.text.body);
-  } else if ((msg.type === 'image' && msg.image) || (msg.type === 'video' && msg.video)) {
-    await handleMedia(from, convo, msg);
+  } else if (msg.type === 'image' && msg.image) {
+    await handleImage(from, convo, msg);
   } else {
     store.addMessage(from, 'in', msg.type || 'unknown', '');
     await reply(from, biz.fill(biz.messaging.unknownMedia));
@@ -225,13 +198,6 @@ async function handleMessage(value, msg) {
 }
 
 async function handleText(from, convo, text) {
-  // 0. Operator commands from Kevin's own number (biz.ownerPhone).
-  // Authenticated by sender phone; never triaged as a tenant.
-  if (isOperator(from)) {
-    const handled = await handleOperatorCommand(from, text);
-    if (handled) return;
-  }
-
   // 1. Emergency always wins, regardless of intent.
   const result = triage.classify(text);
   logEvent({
@@ -251,23 +217,6 @@ async function handleText(from, convo, text) {
     store.updateConversation(from, { state: 'idle', issue: null, lead: null, exchanges: 0 });
     await flagForKevin(from, 'emergency ticket ' + ticket.id + ' created');
     policies.startEmergencyDispatch(store, ticket);
-    return;
-  }
-
-  // 1b. A known trade replying (e.g. to a job card): never triage a pro as
-  // a tenant. Confirmations and status updates go to Kevin, as today;
-  // questions and detail requests relay to the tenant on the active ticket.
-  const proProfile = policies.findProByPhone(store, from);
-  if (proProfile) {
-    const relayTicket = store.findRelayTicketByProPhone(from);
-    if (relayTicket && relay.tradeTargetsTenant(text)) {
-      const ok = await forwardRelayText('pro', relayTicket, proProfile, from, text);
-      if (ok) await reply(from, relay.relayAck('pro', proProfile));
-      return;
-    }
-    await flagForKevin(from, proProfile.name + ' replied: ' + String(text).slice(0, 140));
-    const firstName = String(proProfile.name || '').split(' ')[0] || 'there';
-    await reply(from, 'Thanks ' + firstName + ', Kevin has your message and will confirm shortly.');
     return;
   }
 
@@ -299,15 +248,6 @@ async function handleText(from, convo, text) {
   // 4. Continuing an in-progress flow.
   if (convo.state === 'awaiting_info' && convo.issue) return finishTriage(from, convo, text);
   if (convo.state === 'awaiting_lead' && convo.lead) return finishLead(from, convo, text);
-  if (convo.state === 'awaiting_address' && convo.ticketId) {
-    // The tenant was asked for the property address. If this looks like a
-    // brand-new issue instead, drop the address wait and handle it fresh.
-    const cls = triage.classify(text);
-    const looksNew = /[?]/.test(text) || triage.isLeadInquiry(text) ||
-      cls.trade !== 'general' || !!cls.emergency;
-    if (!looksNew) return finishAddress(from, convo, text);
-    store.updateConversation(from, { state: 'idle', ticketId: null, issue: null, lead: null, exchanges: 0 });
-  }
 
   // 4b. Simple acknowledgment ("ok", "thanks") with no active flow:
   // close politely instead of starting a brand-new triage.
@@ -337,20 +277,10 @@ async function handleText(from, convo, text) {
   }
 
   // 6b. Follow-up on an open ticket: the tenant asks a question or checks
-  // status instead of reporting something new. On an actively dispatched
-  // ticket the pro gets it directly through the relay; otherwise answer in
-  // the ticket's context instead of starting a fresh triage.
+  // status instead of reporting something new. Answer in the ticket's
+  // context instead of starting a fresh triage.
   const openTicket = store.findOpenTicketByPhone(from);
   if (openTicket && triage.isFollowupOnTicket(text)) {
-    const relayTicket = store.findRelayTicketByTenantPhone(from);
-    if (relayTicket) {
-      const pro = policies.findProByPhone(store, relayTicket.assignedProPhone);
-      if (pro) {
-        const ok = await forwardRelayText('tenant', relayTicket, pro, from, text);
-        if (ok) await reply(from, relay.relayAck('tenant', pro));
-        return;
-      }
-    }
     await handleTicketFollowup(from, openTicket, text);
     return;
   }
@@ -395,38 +325,16 @@ async function finishTriage(from, convo, text) {
   const issue = convo.issue;
   const combined = issue.firstMessage + '\nTenant added: ' + text;
   const result = triage.classify(combined);
-  // The tenant just answered the timing question (ASAP vs scheduled):
-  // their answer refines the urgency.
-  const urgency = triage.parseUrgencyAnswer(text) || result.urgency;
   let ticket = store.createTicket({
     phone: from, tenantName: convo.name, kind: 'maintenance',
-    trade: result.trade, urgency,
+    trade: result.trade, urgency: result.urgency,
     summary: result.summary, photoIds: issue.photoIds || [],
   });
   ticket = enrichTicketFromProperty(ticket) || ticket;
+  store.updateConversation(from, { state: 'idle', issue: null, exchanges: 0 });
   let msg = triage.confirmationMessage(ticket);
   if (result.diyTip) msg += '\n\nSafe to try in the meantime: ' + result.diyTip;
-  if (!ticket.address) {
-    // No address on file (unknown tenant, no landlord property match):
-    // ask for it now so dispatch can match the right service area.
-    store.updateConversation(from, { state: 'awaiting_address', ticketId: ticket.id, issue: null, exchanges: 0 });
-    msg += '\n\nOne more thing: what is the property address?';
-  } else {
-    store.updateConversation(from, { state: 'idle', issue: null, exchanges: 0 });
-  }
   await reply(from, msg);
-}
-
-async function finishAddress(from, convo, text) {
-  const ticket = store.getTicket(convo.ticketId);
-  const addr = String(text || '').trim().slice(0, 200);
-  if (ticket && addr) store.updateTicket(ticket.id, { address: addr });
-  store.updateConversation(from, { state: 'idle', ticketId: null, exchanges: 0 });
-  await reply(
-    from,
-    'Got it, ' + addr + ' is noted on ticket ' + (ticket ? ticket.id : '') +
-      '. We will be in touch shortly to schedule the visit.'
-  );
 }
 
 async function finishLead(from, convo, text) {
@@ -496,116 +404,6 @@ function parseMoney(v) {
   return Math.round(n * 100) / 100;
 }
 
-// Pro dispatch: once a quote is approved (landlord sign-off or auto-approved
-// under the NTE cap), the best-matching trade gets the job card on WhatsApp.
-// Matching is by trade, ranked by service-area coverage of the tenant's
-// address. Kevin still gets his alert; the pro replying is routed to Kevin,
-// never triaged as a tenant.
-async function dispatchApprovedTicket(ticket) {
-  const flow = ticket.landlordDecision === 'auto-approved' ? 'nte-auto' : 'nte-approved';
-  // Never send a trade out blind. The job card must carry the property
-  // address and tenant contact; without them the trade cannot accept the
-  // job informed. Hold the dispatch and tell Kevin what's missing instead
-  // of sending a half-empty card. Kevin re-runs dispatch by setting the
-  // quote again once the info is on file.
-  const missing = [];
-  if (!ticket.address) missing.push('property address');
-  if (!ticket.phone) missing.push('tenant phone');
-  if (missing.length) {
-    const record = {
-      flow,
-      candidates: [],
-      status: 'blocked',
-      dispatchedAt: new Date().toISOString(),
-      proId: null,
-      proName: null,
-      reason: 'missing ' + missing.join(' and '),
-    };
-    store.updateTicket(ticket.id, { dispatch: record });
-    await flagForKevin(
-      ticket.phone || 'inbox',
-      'cannot dispatch ' + ticket.id + ': missing ' + missing.join(' and ') +
-        ' - job card held, nothing sent to any trade'
-    );
-    return record;
-  }
-  const candidates = policies.findCandidateTrades(store, ticket);
-  const pro = candidates[0] || null;
-  const record = {
-    flow,
-    candidates: candidates.map((c) => ({ id: c.id, name: c.name })),
-    status: pro ? 'sending' : 'no-trade',
-    dispatchedAt: new Date().toISOString(),
-    proId: pro ? pro.id : null,
-    proName: pro ? pro.name : null,
-  };
-  if (pro && pro.phone) {
-    store.getConversation(pro.phone, pro.name);
-    const sent = await reply(pro.phone, triage.proJobCardMessage(ticket, pro));
-    // Only mark dispatched when Meta actually accepted the message. A
-    // failure (e.g. 131047 outside the 24h window) must not show as
-    // dispatched in the inbox.
-    record.status = sent ? 'dispatched' : 'failed';
-    if (!sent) record.error = 'WhatsApp send failed; see alert email for the Meta error';
-    store.updateTicket(ticket.id, {
-      dispatch: record,
-      status: sent ? 'dispatched' : ticket.status,
-      // Link the trade to the ticket so the trade<->tenant relay knows who
-      // is on the job. The relay itself only goes live on a real dispatch.
-      assignedProPhone: pro.phone,
-      assignedProId: pro.id || null,
-      assignedProName: pro.name || null,
-    });
-    await flagForKevin(
-      pro.phone,
-      (sent ? 'dispatched ' : 'FAILED to dispatch ') + ticket.id + ' to ' + pro.name
-    );
-  } else {
-    await flagForKevin(
-      ticket.phone || 'inbox',
-      'no trade on file for ' + ticket.id + ' (' + ticket.trade + '): Kevin dispatches manually'
-    );
-  }
-  return record;
-}
-
-// ---------------------------------------------------------------------------
-// Trade <-> tenant relay: forward a text message from one side of an
-// actively dispatched ticket to the other. Returns true only when Meta
-// accepted the forward. On failure the sender is told honestly; Kevin is
-// flagged by reply()'s failure path. No relayed state is marked on the
-// ticket on failure.
-// ---------------------------------------------------------------------------
-async function forwardRelayText(fromRole, ticket, pro, senderPhone, text) {
-  if (!relay.isRelayActive(ticket, pro.phone)) return false;
-  const to = relay.relayRecipient(fromRole, ticket, pro);
-  if (!to) {
-    logEvent({ event: 'relay', ticket: ticket.id, from: fromRole, kind: 'text', ok: false, reason: 'no_recipient' });
-    return false;
-  }
-  const body = relay.buildRelayText(fromRole, ticket, pro, text);
-  const ok = await reply(to, body, { relay: relay.relayTag(fromRole, ticket) });
-  logEvent({ event: 'relay', ticket: ticket.id, from: fromRole, to, kind: 'text', ok });
-  if (!ok) await reply(senderPhone, relay.relayFailureNotice('text'));
-  return ok;
-}
-
-// Forward a photo/video across the relay. The media is downloaded from
-// Meta, re-uploaded, and sent to the other side with a prefixed caption.
-async function forwardRelayMedia(fromRole, ticket, pro, senderPhone, kind, buffer, mimeType, caption) {
-  if (!relay.isRelayActive(ticket, pro.phone)) return false;
-  const to = relay.relayRecipient(fromRole, ticket, pro);
-  if (!to || !buffer || !buffer.length) {
-    logEvent({ event: 'relay', ticket: ticket.id, from: fromRole, kind, ok: false, reason: !to ? 'no_recipient' : 'empty_media' });
-    return false;
-  }
-  const cap = relay.buildRelayCaption(fromRole, ticket, pro, kind, caption);
-  const ok = await replyMedia(to, kind, buffer, mimeType, cap, { relay: relay.relayTag(fromRole, ticket) });
-  logEvent({ event: 'relay', ticket: ticket.id, from: fromRole, to, kind, ok });
-  if (!ok) await reply(senderPhone, relay.relayFailureNotice(kind));
-  return ok;
-}
-
 async function handleLandlordReply(from, convo, text, ticket) {
   const decision = triage.parseLandlordDecision(text);
   if (decision === 'approved') {
@@ -615,7 +413,6 @@ async function handleLandlordReply(from, convo, text, ticket) {
     if (ticket.phone && ticket.phone !== from) {
       await reply(ticket.phone, 'Good news: your landlord approved the repair. We will be in touch shortly to schedule the visit.');
     }
-    await dispatchApprovedTicket(store.getTicket(ticket.id));
     return;
   }
   if (decision === 'declined') {
@@ -630,60 +427,6 @@ async function handleLandlordReply(from, convo, text, ticket) {
   // Ambiguous reply: don't guess on money, let Kevin handle it.
   await flagForKevin(from, 'landlord reply needs review (' + ticket.id + ')');
   await reply(from, biz.fill(biz.messaging.landlordAmbiguous));
-}
-
-// Photos and videos. On an actively dispatched ticket the media belongs to
-// the other side of the job and is forwarded through the relay. Otherwise
-// photos keep today's AI-triage behavior; video outside a relay is still
-// unsupported (same unknownMedia reply as before).
-async function handleMedia(from, convo, msg) {
-  const kind = msg.type === 'video' ? 'video' : 'image';
-  const media = msg.image || msg.video || {};
-  const caption = media.caption || '';
-  const label = '[' + kind + ']' + (caption ? ' ' + caption : '');
-  const mimeType = media.mime_type || (kind === 'video' ? 'video/mp4' : 'image/jpeg');
-
-  // Trade sending media on their active ticket -> forward to the tenant.
-  const proProfile = policies.findProByPhone(store, from);
-  if (proProfile) {
-    const relayTicket = store.findRelayTicketByProPhone(from);
-    if (relayTicket) {
-      store.addMessage(from, 'in', kind, label);
-      const buffer = await wa.downloadMedia(media.id);
-      if (!buffer) {
-        await reply(from, 'I could not fetch that ' + (kind === 'video' ? 'video' : 'photo') + '. Please try sending it again.');
-        return;
-      }
-      const ok = await forwardRelayMedia('pro', relayTicket, proProfile, from, kind, buffer, mimeType, caption);
-      if (ok) await reply(from, relay.relayAck('pro', proProfile));
-      return;
-    }
-  } else {
-    // Tenant sending media on their actively dispatched ticket -> the pro.
-    const relayTicket = store.findRelayTicketByTenantPhone(from);
-    if (relayTicket) {
-      const pro = policies.findProByPhone(store, relayTicket.assignedProPhone);
-      if (pro) {
-        store.addMessage(from, 'in', kind, label);
-        const buffer = await wa.downloadMedia(media.id);
-        if (!buffer) {
-          await reply(from, 'I could not fetch that ' + (kind === 'video' ? 'video' : 'photo') + '. Please try sending it again.');
-          return;
-        }
-        const ok = await forwardRelayMedia('tenant', relayTicket, pro, from, kind, buffer, mimeType, caption);
-        if (ok) await reply(from, relay.relayAck('tenant', pro));
-        return;
-      }
-    }
-  }
-
-  // No active relay: photos keep today's behavior; video was never handled.
-  if (kind === 'video') {
-    store.addMessage(from, 'in', 'video', label);
-    await reply(from, biz.fill(biz.messaging.unknownMedia));
-    return;
-  }
-  await handleImage(from, convo, msg);
 }
 
 async function handleImage(from, convo, msg) {
@@ -712,19 +455,32 @@ async function handleImage(from, convo, msg) {
   }
 
   if (analysis) {
+    const questions = (analysis.questions || []).slice(0, 2);
+    if (questions.length === 0) {
+      let ticket = store.createTicket({
+        phone: from, tenantName: convo.name, kind: 'maintenance',
+        trade: analysis.trade || 'general', urgency: analysis.urgency || 'routine',
+        summary: analysis.summary || 'Issue reported by photo.',
+        photoIds: mediaId ? [mediaId] : [],
+      });
+      ticket = enrichTicketFromProperty(ticket) || ticket;
+      store.updateConversation(from, { state: 'idle', issue: null });
+      await reply(from, 'Thanks for the photo. ' + (analysis.likely_issue ? 'This looks like ' + analysis.likely_issue + '. ' : '') + triage.confirmationMessage(ticket));
+      return;
+    }
     store.updateConversation(from, {
       state: 'awaiting_info', exchanges: 1,
       issue: {
         trade: analysis.trade || 'general', urgency: analysis.urgency || 'routine',
         title: analysis.likely_issue || 'Issue from photo',
         summary: analysis.summary || 'Issue reported by photo.',
-        firstMessage: caption || 'Photo sent by tenant.',
+        questions, firstMessage: caption || 'Photo sent by tenant.',
         photoIds: mediaId ? [mediaId] : [],
       },
     });
     let m = 'Thanks for the photo. ';
     if (analysis.likely_issue) m += 'This looks like ' + analysis.likely_issue + '. ';
-    m += 'Do you need someone out as soon as possible, or can this be scheduled for a regular visit?';
+    m += 'Two quick questions:\n' + questions.map((q, i) => (i + 1) + '. ' + q).join('\n');
     await reply(from, m);
     return;
   }
@@ -740,61 +496,6 @@ async function handleImage(from, convo, msg) {
     },
   });
   await reply(from, "Thanks for the photo, I've attached it to your file. In one sentence, what's the problem?");
-}
-
-// --- Operator commands -------------------------------------------------------
-// Kevin manages trades by texting the bot from his own number. The sender
-// phone must match biz.ownerPhone, so these never get triaged as a tenant.
-
-function isOperator(from) {
-  const owner = String((biz && biz.ownerPhone) || '').replace(/\D/g, '');
-  return !!owner && String(from || '').replace(/\D/g, '') === owner;
-}
-
-function fmtTradeLine(p, i) {
-  const bits = [p.name, p.trade, '+' + p.phone];
-  if (p.company) bits.push(p.company);
-  return (i != null ? (i + 1) + '. ' : '') + bits.join(' - ');
-}
-
-async function handleOperatorCommand(from, text) {
-  const t = String(text || '').trim();
-  const m = t.match(/^(add trade|list trades)\b/i);
-  if (!m) return false;
-  const cmd = m[1].toLowerCase();
-  if (cmd === 'list trades') {
-    const trades = store.getTradeProfiles();
-    await reply(from, trades.length
-      ? 'Trades on file:\n' + trades.map((p, i) => fmtTradeLine(p, i)).join('\n')
-      : 'No trades on file yet. Text ADD TRADE to add one.');
-    return true;
-  }
-  // ADD TRADE name | trade | phone | company | email | hourly | minHours | areas
-  const parts = t.slice(m[0].length).split('|').map((s) => s.trim());
-  const [name, trade, phone, company, email, hourly, minimumHours, areas] = parts;
-  if (!name || !trade || !phone) {
-    await reply(from, 'Usage:\nADD TRADE name | trade | phone | company | email | hourly | min hours | areas\nOnly name, trade and phone are required. Example:\nADD TRADE Joe Locker | plumbing | 6473337087 | JSL Plumbing | jslplumbing25@gmail.com | 70 | 1.5 | Toronto, Mississauga, Etobicoke');
-    return true;
-  }
-  const rates = {};
-  const h = Number(hourly), mh = Number(minimumHours);
-  if (isFinite(h) && h > 0) rates.hourly = h;
-  if (isFinite(mh) && mh > 0) rates.minimumHours = mh;
-  const profile = store.saveTradeProfile({
-    name: String(name).slice(0, 120),
-    trade: String(trade).toLowerCase().slice(0, 40),
-    phone: String(phone).replace(/\D/g, ''),
-    company: company || undefined,
-    email: email || undefined,
-    rates: Object.keys(rates).length ? rates : undefined,
-    serviceAreas: areas ? areas.split(',').map((a) => a.trim()).filter(Boolean).map((a) => a.slice(0, 80)) : [],
-  });
-  let line = 'Saved: ' + fmtTradeLine(profile);
-  if (profile.rates && profile.rates.hourly) line += ' - $' + profile.rates.hourly + '/hr';
-  if (profile.rates && profile.rates.minimumHours) line += ', ' + profile.rates.minimumHours + ' hr min';
-  if (profile.serviceAreas && profile.serviceAreas.length) line += '\nAreas: ' + profile.serviceAreas.join(', ');
-  await reply(from, line);
-  return true;
 }
 
 // --- Inbox + API ---------------------------------------------------------------
@@ -929,19 +630,23 @@ app.post('/api/tickets/:id/quote', auth, async (req, res) => {
     autoApproveLimit: check.limit,
   });
   if (check.withinCap) {
+    const candidates = policies.findCandidateTrades(store, updated);
     updated = store.updateTicket(ticket.id, {
       landlordDecision: 'auto-approved',
       awaitingLandlord: false,
+      dispatch: {
+        flow: 'nte-auto',
+        candidates: candidates.map((c) => ({ id: c.id, name: c.name })),
+        status: 'awaiting_dispatch',
+      },
     });
     if (ticket.phone) await reply(ticket.phone, triage.tenantQuoteMessage(updated, true));
-    const dispatch = await dispatchApprovedTicket(updated);
     await flagForKevin(
       ticket.phone || 'inbox',
       'quote ' + triage.fmtCAD(total) + ' within ' + triage.fmtCAD(check.limit) +
         ' cap: ' + ticket.id + ' auto-approved' +
-        (dispatch.status === 'blocked'
-          ? ', dispatch BLOCKED: ' + (dispatch.reason || 'missing info')
-          : (dispatch.proName ? ', dispatched to ' + dispatch.proName : ', no trade on file'))
+        (candidates.length ? ', nearest ' + ticket.trade + ': ' + candidates[0].name : '') +
+        ', ready to dispatch'
     );
     return res.json({ id: ticket.id, decision: 'auto-approved', total, limit: check.limit });
   }
@@ -999,21 +704,10 @@ app.post('/api/landlords/:phone', auth, (req, res) => {
 });
 
 // Trade profiles for location-based dispatch:
-// { id?, name, trade, phone, email?, company?, rates?, serviceAreas: ['Toronto', 'M4B'] }.
-// rates: { hourly?, minimumHours? } — informational, landlord-facing only.
+// { id?, name, trade, phone, serviceAreas: ['Toronto', 'M4B'] }.
 app.get('/api/trades', auth, (req, res) => {
   res.json(store.getTradeProfiles());
 });
-
-function parseRates(v) {
-  if (!v || typeof v !== 'object') return undefined;
-  const rates = {};
-  const hourly = Number(v.hourly);
-  if (isFinite(hourly) && hourly > 0) rates.hourly = hourly;
-  const minimumHours = Number(v.minimumHours);
-  if (isFinite(minimumHours) && minimumHours > 0) rates.minimumHours = minimumHours;
-  return Object.keys(rates).length ? rates : undefined;
-}
 
 app.post('/api/trades', auth, (req, res) => {
   const body = req.body || {};
@@ -1023,9 +717,6 @@ app.post('/api/trades', auth, (req, res) => {
     name: String(body.name).slice(0, 120),
     trade: String(body.trade).slice(0, 40),
     phone: String(body.phone || '').replace(/\D/g, ''),
-    email: String(body.email || '').slice(0, 120) || undefined,
-    company: String(body.company || '').slice(0, 120) || undefined,
-    rates: parseRates(body.rates),
     serviceAreas: Array.isArray(body.serviceAreas)
       ? body.serviceAreas.map((a) => String(a).slice(0, 80))
       : [],
