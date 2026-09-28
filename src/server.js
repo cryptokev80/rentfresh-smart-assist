@@ -265,6 +265,15 @@ async function handleText(from, convo, text) {
   // 4. Continuing an in-progress flow.
   if (convo.state === 'awaiting_info' && convo.issue) return finishTriage(from, convo, text);
   if (convo.state === 'awaiting_lead' && convo.lead) return finishLead(from, convo, text);
+  if (convo.state === 'awaiting_address' && convo.ticketId) {
+    // The tenant was asked for the property address. If this looks like a
+    // brand-new issue instead, drop the address wait and handle it fresh.
+    const cls = triage.classify(text);
+    const looksNew = /[?]/.test(text) || triage.isLeadInquiry(text) ||
+      cls.trade !== 'general' || !!cls.emergency;
+    if (!looksNew) return finishAddress(from, convo, text);
+    store.updateConversation(from, { state: 'idle', ticketId: null, issue: null, lead: null, exchanges: 0 });
+  }
 
   // 4b. Simple acknowledgment ("ok", "thanks") with no active flow:
   // close politely instead of starting a brand-new triage.
@@ -348,10 +357,29 @@ async function finishTriage(from, convo, text) {
     summary: result.summary, photoIds: issue.photoIds || [],
   });
   ticket = enrichTicketFromProperty(ticket) || ticket;
-  store.updateConversation(from, { state: 'idle', issue: null, exchanges: 0 });
   let msg = triage.confirmationMessage(ticket);
   if (result.diyTip) msg += '\n\nSafe to try in the meantime: ' + result.diyTip;
+  if (!ticket.address) {
+    // No address on file (unknown tenant, no landlord property match):
+    // ask for it now so dispatch can match the right service area.
+    store.updateConversation(from, { state: 'awaiting_address', ticketId: ticket.id, issue: null, exchanges: 0 });
+    msg += '\n\nOne more thing: what is the property address?';
+  } else {
+    store.updateConversation(from, { state: 'idle', issue: null, exchanges: 0 });
+  }
   await reply(from, msg);
+}
+
+async function finishAddress(from, convo, text) {
+  const ticket = store.getTicket(convo.ticketId);
+  const addr = String(text || '').trim().slice(0, 200);
+  if (ticket && addr) store.updateTicket(ticket.id, { address: addr });
+  store.updateConversation(from, { state: 'idle', ticketId: null, exchanges: 0 });
+  await reply(
+    from,
+    'Got it, ' + addr + ' is noted on ticket ' + (ticket ? ticket.id : '') +
+      '. We will be in touch shortly to schedule the visit.'
+  );
 }
 
 async function finishLead(from, convo, text) {
