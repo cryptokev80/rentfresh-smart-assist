@@ -189,8 +189,6 @@ async function loadTickets() {
     '<div class="meta">' + esc(t.tenantName) + ' · ' + esc(t.phone) + ' · ' + fmtTime(t.createdAt) + '</div>' +
     (t.address ? '<div class="meta">' + esc(t.address) + (t.unit ? ' · ' + esc(t.unit) : '') + '</div>' : '') +
     (t.quote ? '<div class="meta">Quote: $' + esc(t.quote.total) + ' ($' + esc(t.quote.labor) + ' labor + $' + esc(t.quote.materials) + ' materials)</div>' : '') +
-    (t.dispatch && t.dispatch.status === 'blocked' ? '<div class="meta" style="color:#b45309">Dispatch blocked: ' + esc(t.dispatch.reason || 'missing info') + '</div>' : '') +
-    (t.dispatch && t.dispatch.status === 'failed' ? '<div class="meta" style="color:#b91c1c">Dispatch failed: ' + esc(t.dispatch.reason || t.dispatch.error || 'send failed') + '</div>' : '') +
     (t.dispatch && t.dispatch.candidates && t.dispatch.candidates.length ? '<div class="meta">Nearby ' + esc(t.trade) + ': ' + esc(t.dispatch.candidates.map(c => c.name).join(', ')) + '</div>' : '') +
     (t.kind === 'maintenance' ? landlordBlock(t) : '') +
     '<div class="actions">' +
