@@ -220,6 +220,16 @@ async function handleText(from, convo, text) {
     return;
   }
 
+  // 1b. A known trade replying (e.g. to a job card): never triage a pro as
+  // a tenant. Their reply goes straight to Kevin.
+  const proProfile = policies.findProByPhone(store, from);
+  if (proProfile) {
+    await flagForKevin(from, proProfile.name + ' replied: ' + String(text).slice(0, 140));
+    const firstName = String(proProfile.name || '').split(' ')[0] || 'there';
+    await reply(from, 'Thanks ' + firstName + ', Kevin has your message and will confirm shortly.');
+    return;
+  }
+
   // 2. Landlord changing their NTE cap by text ("set my cap to 500").
   // Only known landlords; everyone else falls through to normal handling.
   // Checked before the approve/decline flow so a cap change never gets
@@ -404,6 +414,39 @@ function parseMoney(v) {
   return Math.round(n * 100) / 100;
 }
 
+// Pro dispatch: once a quote is approved (landlord sign-off or auto-approved
+// under the NTE cap), the best-matching trade gets the job card on WhatsApp.
+// Matching is by trade, ranked by service-area coverage of the tenant's
+// address. Kevin still gets his alert; the pro replying is routed to Kevin,
+// never triaged as a tenant.
+async function dispatchApprovedTicket(ticket) {
+  const candidates = policies.findCandidateTrades(store, ticket);
+  const pro = candidates[0] || null;
+  const record = {
+    flow: ticket.landlordDecision === 'auto-approved' ? 'nte-auto' : 'nte-approved',
+    candidates: candidates.map((c) => ({ id: c.id, name: c.name })),
+    status: pro ? 'dispatched' : 'no-trade',
+    dispatchedAt: new Date().toISOString(),
+    proId: pro ? pro.id : null,
+    proName: pro ? pro.name : null,
+  };
+  store.updateTicket(ticket.id, {
+    dispatch: record,
+    status: pro ? 'dispatched' : ticket.status,
+  });
+  if (pro && pro.phone) {
+    store.getConversation(pro.phone, pro.name);
+    await reply(pro.phone, triage.proJobCardMessage(ticket, pro));
+    await flagForKevin(pro.phone, 'dispatched ' + ticket.id + ' to ' + pro.name);
+  } else {
+    await flagForKevin(
+      ticket.phone || 'inbox',
+      'no trade on file for ' + ticket.id + ' (' + ticket.trade + '): Kevin dispatches manually'
+    );
+  }
+  return record;
+}
+
 async function handleLandlordReply(from, convo, text, ticket) {
   const decision = triage.parseLandlordDecision(text);
   if (decision === 'approved') {
@@ -413,6 +456,7 @@ async function handleLandlordReply(from, convo, text, ticket) {
     if (ticket.phone && ticket.phone !== from) {
       await reply(ticket.phone, 'Good news: your landlord approved the repair. We will be in touch shortly to schedule the visit.');
     }
+    await dispatchApprovedTicket(store.getTicket(ticket.id));
     return;
   }
   if (decision === 'declined') {
@@ -630,23 +674,17 @@ app.post('/api/tickets/:id/quote', auth, async (req, res) => {
     autoApproveLimit: check.limit,
   });
   if (check.withinCap) {
-    const candidates = policies.findCandidateTrades(store, updated);
     updated = store.updateTicket(ticket.id, {
       landlordDecision: 'auto-approved',
       awaitingLandlord: false,
-      dispatch: {
-        flow: 'nte-auto',
-        candidates: candidates.map((c) => ({ id: c.id, name: c.name })),
-        status: 'awaiting_dispatch',
-      },
     });
     if (ticket.phone) await reply(ticket.phone, triage.tenantQuoteMessage(updated, true));
+    const dispatch = await dispatchApprovedTicket(updated);
     await flagForKevin(
       ticket.phone || 'inbox',
       'quote ' + triage.fmtCAD(total) + ' within ' + triage.fmtCAD(check.limit) +
         ' cap: ' + ticket.id + ' auto-approved' +
-        (candidates.length ? ', nearest ' + ticket.trade + ': ' + candidates[0].name : '') +
-        ', ready to dispatch'
+        (dispatch.proName ? ', dispatched to ' + dispatch.proName : ', no trade on file')
     );
     return res.json({ id: ticket.id, decision: 'auto-approved', total, limit: check.limit });
   }
@@ -704,10 +742,21 @@ app.post('/api/landlords/:phone', auth, (req, res) => {
 });
 
 // Trade profiles for location-based dispatch:
-// { id?, name, trade, phone, serviceAreas: ['Toronto', 'M4B'] }.
+// { id?, name, trade, phone, email?, company?, rates?, serviceAreas: ['Toronto', 'M4B'] }.
+// rates: { hourly?, minimumHours? } — informational, landlord-facing only.
 app.get('/api/trades', auth, (req, res) => {
   res.json(store.getTradeProfiles());
 });
+
+function parseRates(v) {
+  if (!v || typeof v !== 'object') return undefined;
+  const rates = {};
+  const hourly = Number(v.hourly);
+  if (isFinite(hourly) && hourly > 0) rates.hourly = hourly;
+  const minimumHours = Number(v.minimumHours);
+  if (isFinite(minimumHours) && minimumHours > 0) rates.minimumHours = minimumHours;
+  return Object.keys(rates).length ? rates : undefined;
+}
 
 app.post('/api/trades', auth, (req, res) => {
   const body = req.body || {};
@@ -717,6 +766,9 @@ app.post('/api/trades', auth, (req, res) => {
     name: String(body.name).slice(0, 120),
     trade: String(body.trade).slice(0, 40),
     phone: String(body.phone || '').replace(/\D/g, ''),
+    email: String(body.email || '').slice(0, 120) || undefined,
+    company: String(body.company || '').slice(0, 120) || undefined,
+    rates: parseRates(body.rates),
     serviceAreas: Array.isArray(body.serviceAreas)
       ? body.serviceAreas.map((a) => String(a).slice(0, 80))
       : [],
