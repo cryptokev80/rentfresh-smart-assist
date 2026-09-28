@@ -432,10 +432,19 @@ function landlordSummaryMessage(ticket) {
   if (ticket.photoIds && ticket.photoIds.length) {
     lines.push('Photos: ' + ticket.photoIds.length + ' attached to the work file.');
   }
+  const limit = ticket.autoApproveLimit || biz.autoApproveDefault;
+  if (ticket.quote && ticket.quote.total > 0) {
+    const q = ticket.quote;
+    lines.push('Quote: ' + fmtCAD(q.total) + ' total (' + fmtCAD(q.labor) + ' labor + ' + fmtCAD(q.materials) + ' materials).');
+    if (q.total > limit) {
+      lines.push('This is over your ' + fmtCAD(limit) + ' auto-approve limit, so it needs your sign-off.');
+    }
+  } else {
+    lines.push(biz.fill(biz.messaging.landlordConfirmLine));
+  }
   lines.push('');
   lines.push('Recommended next step: ' + (NEXT_STEP[ticket.urgency] || NEXT_STEP.routine));
-  lines.push('Auto-approve limit on file: $' + (ticket.autoApproveLimit || biz.autoApproveDefault) + '.');
-  lines.push(biz.fill(biz.messaging.landlordConfirmLine));
+  lines.push('Auto-approve limit on file: ' + fmtCAD(limit) + '.');
   lines.push('');
   lines.push('Reply APPROVE to go ahead, or DECLINE to hold.');
   return lines.join('\n');
@@ -456,6 +465,47 @@ function parseLandlordDecision(text) {
   return null; // ambiguous: a human (Kevin) decides
 }
 
+// ---------------------------------------------------------------------------
+// NTE spending cap: formatting, landlord cap changes by text, and the
+// tenant-facing quote messages. Landlords text things like "set my cap to
+// 500" or "my limit is 400". Values outside $50-$5000 are ignored so the bot
+// never guesses on money: those fall through to Kevin.
+// ---------------------------------------------------------------------------
+
+function fmtCAD(n) {
+  const num = Number(n);
+  if (!isFinite(num)) return '$0';
+  return '$' + (Math.round(num * 100) / 100).toLocaleString('en-CA', { maximumFractionDigits: 2 });
+}
+
+const CAP_CHANGE_PATTERNS = [
+  /(?:set|change|update|raise|lower|increase)\s+(?:my\s+)?(?:spending\s+)?(?:cap|limit)\s+(?:to\s+|at\s+)?\$?\s*(\d{2,5})/,
+  /(?:my\s+)?(?:spending\s+)?(?:cap|limit)\s+(?:is\s+)?(?:now\s+)?\$?\s*(\d{2,5})/,
+];
+
+function parseCapChange(text) {
+  const t = ' ' + String(text || '').toLowerCase() + ' ';
+  for (const p of CAP_CHANGE_PATTERNS) {
+    const m = t.match(p);
+    if (m) {
+      const n = parseInt(m[1], 10);
+      return n >= 50 && n <= 5000 ? n : null;
+    }
+  }
+  return null;
+}
+
+/** Tenant-facing message once a quote is checked against the landlord's cap. */
+function tenantQuoteMessage(ticket, approved) {
+  const q = ticket.quote || { labor: 0, materials: 0, total: 0 };
+  return biz.fill(approved ? biz.messaging.quoteAutoApproved : biz.messaging.quoteAwaitingLandlord, {
+    total: fmtCAD(q.total),
+    labor: fmtCAD(q.labor),
+    materials: fmtCAD(q.materials),
+    limit: fmtCAD(ticket.autoApproveLimit || biz.autoApproveDefault),
+  });
+}
+
 module.exports = {
   classify,
   confirmationMessage,
@@ -469,6 +519,9 @@ module.exports = {
   leadQuestionsMessage,
   landlordSummaryMessage,
   parseLandlordDecision,
+  parseCapChange,
+  tenantQuoteMessage,
+  fmtCAD,
   TRADE_LABELS,
   URGENCY_LABELS,
   NEXT_STEP,

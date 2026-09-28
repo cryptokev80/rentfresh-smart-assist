@@ -207,11 +207,12 @@ async function handleText(from, convo, text) {
   });
   if (result.emergency) {
     await reply(from, result.advice);
-    const ticket = store.createTicket({
+    let ticket = store.createTicket({
       phone: from, tenantName: convo.name, kind: 'maintenance',
       trade: result.trade, urgency: 'emergency',
       summary: result.summary, emergencyRule: result.ruleId,
     });
+    ticket = enrichTicketFromProperty(ticket) || ticket;
     await reply(from, biz.fill(biz.messaging.emergencyTicketCreated, { ticketId: ticket.id }));
     store.updateConversation(from, { state: 'idle', issue: null, lead: null, exchanges: 0 });
     await flagForKevin(from, 'emergency ticket ' + ticket.id + ' created');
@@ -219,7 +220,17 @@ async function handleText(from, convo, text) {
     return;
   }
 
-  // 2. Landlord replying to a summary we sent (approve / decline).
+  // 2. Landlord changing their NTE cap by text ("set my cap to 500").
+  // Only known landlords; everyone else falls through to normal handling.
+  // Checked before the approve/decline flow so a cap change never gets
+  // misread as a decision on an awaiting ticket.
+  const capChange = triage.parseCapChange(text);
+  if (capChange && store.isKnownLandlord(from)) {
+    await handleCapChange(from, capChange);
+    return;
+  }
+
+  // 3. Landlord replying to a summary we sent (approve / decline).
   // Checked after emergency so a safety report from a landlord still wins.
   const landlordTicket = store.findAwaitingLandlordTicket(from);
   if (landlordTicket) {
@@ -227,7 +238,7 @@ async function handleText(from, convo, text) {
     return;
   }
 
-  // 3. Explicit human handoff.
+  // 4. Explicit human handoff.
   if (triage.wantsHuman(text)) {
     await reply(from, biz.fill(biz.messaging.humanHandoff));
     await flagForKevin(from, 'human handoff requested');
@@ -281,11 +292,12 @@ async function finishTriage(from, convo, text) {
   const issue = convo.issue;
   const combined = issue.firstMessage + '\nTenant added: ' + text;
   const result = triage.classify(combined);
-  const ticket = store.createTicket({
+  let ticket = store.createTicket({
     phone: from, tenantName: convo.name, kind: 'maintenance',
     trade: result.trade, urgency: result.urgency,
     summary: result.summary, photoIds: issue.photoIds || [],
   });
+  ticket = enrichTicketFromProperty(ticket) || ticket;
   store.updateConversation(from, { state: 'idle', issue: null, exchanges: 0 });
   let msg = triage.confirmationMessage(ticket);
   if (result.diyTip) msg += '\n\nSafe to try in the meantime: ' + result.diyTip;
@@ -304,6 +316,59 @@ async function finishLead(from, convo, text) {
     from,
     biz.fill(biz.messaging.leadReceived, { ticketId: ticket.id })
   );
+}
+
+/**
+ * Match the ticket's tenant phone against landlord signup properties.
+ * When matched, the ticket picks up the unit address (for location-based
+ * dispatch), the landlord link, and the landlord's NTE cap automatically.
+ */
+function enrichTicketFromProperty(ticket) {
+  if (!ticket || ticket.address) return ticket;
+  const prop = store.findPropertyByTenantPhone(ticket.phone);
+  if (!prop) return ticket;
+  return store.updateTicket(ticket.id, {
+    address: prop.address,
+    unit: prop.unit || ticket.unit,
+    landlordPhone: prop.landlordPhone || ticket.landlordPhone,
+    landlordName: prop.landlordName || ticket.landlordName,
+    autoApproveLimit: prop.autoApproveLimit || ticket.autoApproveLimit,
+    tenantName:
+      ticket.tenantName && ticket.tenantName !== 'Unknown'
+        ? ticket.tenantName
+        : prop.tenantName || ticket.tenantName,
+  });
+}
+
+/** Landlord texted a new NTE cap. Update it, confirm, and re-evaluate any
+ *  awaiting tickets that now fit under the raised cap. */
+async function handleCapChange(from, newCap) {
+  const digits = String(from).replace(/\D/g, '');
+  store.setLandlordPolicy(digits, { autoApproveLimit: newCap });
+  logEvent({ event: 'cap_change', from, newCap });
+  await reply(from, biz.fill(biz.messaging.capUpdated, { limit: triage.fmtCAD(newCap) }));
+  await flagForKevin(from, 'landlord set NTE cap to $' + newCap);
+  const awaiting = store.findAwaitingLandlordTicketsByLandlord(digits);
+  for (const t of awaiting) {
+    const total = t.quote && t.quote.total;
+    if (!total || total > newCap) continue;
+    store.updateTicket(t.id, {
+      landlordDecision: 'auto-approved',
+      awaitingLandlord: false,
+      autoApproveLimit: newCap,
+    });
+    await flagForKevin(from, 'cap raised to $' + newCap + ': ' + t.id + ' auto-approved');
+    if (t.phone && t.phone !== from) {
+      await reply(t.phone, biz.fill(biz.messaging.capRaisedTenantNote));
+    }
+  }
+}
+
+function parseMoney(v) {
+  if (v === undefined || v === null || v === '') return 0;
+  const n = Number(String(v).replace(/[$,\s]/g, ''));
+  if (!isFinite(n) || n < 0) return null;
+  return Math.round(n * 100) / 100;
 }
 
 async function handleLandlordReply(from, convo, text, ticket) {
@@ -344,12 +409,13 @@ async function handleImage(from, convo, msg) {
       from,
       'Thanks for the photo. If there is any immediate danger (gas smell, smoke, active flooding), call 911 first. I have flagged this as urgent and the team has been notified.'
     );
-    store.createTicket({
+    let ticket = store.createTicket({
       phone: from, tenantName: convo.name, kind: 'maintenance',
       trade: analysis.trade || 'general', urgency: 'emergency',
       summary: analysis.summary || 'Photo report with possible safety risk.',
       photoIds: mediaId ? [mediaId] : [],
     });
+    ticket = enrichTicketFromProperty(ticket) || ticket;
     store.updateConversation(from, { state: 'idle', issue: null });
     await flagForKevin(from, 'photo flagged as possible safety risk');
     return;
@@ -358,12 +424,13 @@ async function handleImage(from, convo, msg) {
   if (analysis) {
     const questions = (analysis.questions || []).slice(0, 2);
     if (questions.length === 0) {
-      const ticket = store.createTicket({
+      let ticket = store.createTicket({
         phone: from, tenantName: convo.name, kind: 'maintenance',
         trade: analysis.trade || 'general', urgency: analysis.urgency || 'routine',
         summary: analysis.summary || 'Issue reported by photo.',
         photoIds: mediaId ? [mediaId] : [],
       });
+      ticket = enrichTicketFromProperty(ticket) || ticket;
       store.updateConversation(from, { state: 'idle', issue: null });
       await reply(from, 'Thanks for the photo. ' + (analysis.likely_issue ? 'This looks like ' + analysis.likely_issue + '. ' : '') + triage.confirmationMessage(ticket));
       return;
@@ -508,6 +575,121 @@ app.post('/api/tickets/:id/send-to-landlord', auth, async (req, res) => {
 });
 
 app.get('/health', (req, res) => res.json({ ok: true, dryRun: wa.dryRun(), commit: COMMIT }));
+
+// NTE quote flow: Kevin enters the trade's quote (labor + materials). At or
+// under the landlord's cap the ticket auto-approves and the tenant is told a
+// pro is being lined up. Over the cap, the landlord gets the summary with
+// the breakdown and the tenant is told it is awaiting sign-off.
+app.post('/api/tickets/:id/quote', auth, async (req, res) => {
+  const ticket = store.getTicket(req.params.id);
+  if (!ticket) return res.status(404).json({ error: 'not found' });
+  const labor = parseMoney(req.body && req.body.labor);
+  const materials = parseMoney(req.body && req.body.materials);
+  if (labor === null || materials === null) {
+    return res.status(400).json({ error: 'labor and materials must be non-negative numbers' });
+  }
+  const total = Math.round((labor + materials) * 100) / 100;
+  const limit = ticket.autoApproveLimit ||
+    store.getLandlordPolicy(ticket.landlordPhone || '').autoApproveLimit;
+  const check = policies.evaluateQuote(limit, total);
+  let updated = store.updateTicket(ticket.id, {
+    quote: { labor, materials, total },
+    autoApproveLimit: check.limit,
+  });
+  if (check.withinCap) {
+    const candidates = policies.findCandidateTrades(store, updated);
+    updated = store.updateTicket(ticket.id, {
+      landlordDecision: 'auto-approved',
+      awaitingLandlord: false,
+      dispatch: {
+        flow: 'nte-auto',
+        candidates: candidates.map((c) => ({ id: c.id, name: c.name })),
+        status: 'awaiting_dispatch',
+      },
+    });
+    if (ticket.phone) await reply(ticket.phone, triage.tenantQuoteMessage(updated, true));
+    await flagForKevin(
+      ticket.phone || 'inbox',
+      'quote ' + triage.fmtCAD(total) + ' within ' + triage.fmtCAD(check.limit) +
+        ' cap: ' + ticket.id + ' auto-approved' +
+        (candidates.length ? ', nearest ' + ticket.trade + ': ' + candidates[0].name : '') +
+        ', ready to dispatch'
+    );
+    return res.json({ id: ticket.id, decision: 'auto-approved', total, limit: check.limit });
+  }
+  if (ticket.landlordPhone) {
+    const text = triage.landlordSummaryMessage(updated);
+    store.getConversation(ticket.landlordPhone, ticket.landlordName || 'Landlord');
+    await reply(ticket.landlordPhone, text);
+    if (ticket.phone && ticket.phone !== ticket.landlordPhone) {
+      await reply(ticket.phone, triage.tenantQuoteMessage(updated, false));
+    }
+    store.updateTicket(ticket.id, {
+      landlordNotifiedAt: new Date().toISOString(),
+      awaitingLandlord: true,
+      landlordDecision: null,
+    });
+    return res.json({ id: ticket.id, decision: 'sent-to-landlord', total, limit: check.limit });
+  }
+  await flagForKevin(
+    ticket.phone || 'inbox',
+    'quote ' + triage.fmtCAD(total) + ' over ' + triage.fmtCAD(check.limit) +
+      ' cap but no landlord on ' + ticket.id
+  );
+  return res.json({ id: ticket.id, decision: 'needs-landlord', total, limit: check.limit });
+});
+
+// Landlord profiles (signup data): name, NTE cap, and properties. Each
+// property: { unit, address, tenantName, tenantPhone }. Tenants are matched
+// to their property by phone when they message in.
+app.get('/api/landlords', auth, (req, res) => {
+  res.json(store.listLandlords());
+});
+
+app.post('/api/landlords/:phone', auth, (req, res) => {
+  const digits = String(req.params.phone || '').replace(/\D/g, '');
+  if (!digits) return res.status(400).json({ error: 'phone required' });
+  const body = req.body || {};
+  const patch = {};
+  if (body.name !== undefined) patch.name = String(body.name || '').slice(0, 120);
+  if (body.autoApproveLimit !== undefined && body.autoApproveLimit !== null && body.autoApproveLimit !== '') {
+    const n = parseInt(body.autoApproveLimit, 10);
+    if (isNaN(n) || n <= 0) return res.status(400).json({ error: 'autoApproveLimit must be positive' });
+    patch.autoApproveLimit = n;
+  }
+  if (body.properties !== undefined) {
+    if (!Array.isArray(body.properties)) return res.status(400).json({ error: 'properties must be an array' });
+    patch.properties = body.properties.map((p) => ({
+      unit: String((p && p.unit) || '').slice(0, 120),
+      address: String((p && p.address) || '').slice(0, 240),
+      tenantName: String((p && p.tenantName) || '').slice(0, 120),
+      tenantPhone: String((p && p.tenantPhone) || '').replace(/\D/g, ''),
+    }));
+  }
+  const profile = store.setLandlordPolicy(digits, patch);
+  res.json(Object.assign({ phone: digits }, profile));
+});
+
+// Trade profiles for location-based dispatch:
+// { id?, name, trade, phone, serviceAreas: ['Toronto', 'M4B'] }.
+app.get('/api/trades', auth, (req, res) => {
+  res.json(store.getTradeProfiles());
+});
+
+app.post('/api/trades', auth, (req, res) => {
+  const body = req.body || {};
+  if (!body.name || !body.trade) return res.status(400).json({ error: 'name and trade required' });
+  const profile = store.saveTradeProfile({
+    id: body.id,
+    name: String(body.name).slice(0, 120),
+    trade: String(body.trade).slice(0, 40),
+    phone: String(body.phone || '').replace(/\D/g, ''),
+    serviceAreas: Array.isArray(body.serviceAreas)
+      ? body.serviceAreas.map((a) => String(a).slice(0, 80))
+      : [],
+  });
+  res.json(profile);
+});
 
 // Refuse to serve production traffic without webhook signature verification.
 // Railway sets RAILWAY_ENVIRONMENT; local dev/test are unaffected.

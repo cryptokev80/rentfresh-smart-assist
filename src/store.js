@@ -14,7 +14,7 @@ const DATA_DIR = process.env.DATA_DIR || path.join(__dirname, '..');
 const DATA_FILE = path.join(DATA_DIR, 'data.json');
 
 function blank() {
-  return { conversations: {}, tickets: [], ticketSeq: 1000, landlordPolicies: {} };
+  return { conversations: {}, tickets: [], ticketSeq: 1000, landlordPolicies: {}, tradeProfiles: {} };
 }
 
 function load() {
@@ -126,8 +126,10 @@ function createTicket(fields) {
     landlordPhone: fields.landlordPhone || null,
     unit: fields.unit || null,
     landlordNotifiedAt: null,
-    landlordDecision: null, // approved | declined
+    landlordDecision: null, // approved | declined | auto-approved
     awaitingLandlord: false,
+    quote: fields.quote || null, // { labor, materials, total }
+    address: fields.address || null, // tenant property address for dispatch
   };
   data.tickets.unshift(ticket);
   save(data);
@@ -156,6 +158,61 @@ function findAwaitingLandlordTicket(landlordPhone) {
     load().tickets.find((t) => t.awaitingLandlord && t.landlordPhone === landlordPhone) ||
     null
   );
+}
+
+/** All tickets awaiting this landlord's decision (digits-normalized match). */
+function findAwaitingLandlordTicketsByLandlord(landlordPhone) {
+  const digits = String(landlordPhone || '').replace(/\D/g, '');
+  if (!digits) return [];
+  return load().tickets.filter(
+    (t) => t.awaitingLandlord && String(t.landlordPhone || '').replace(/\D/g, '') === digits
+  );
+}
+
+/** True when the sender is a landlord we know: has a policy, or is attached to a ticket. */
+function isKnownLandlord(phone) {
+  const digits = String(phone || '').replace(/\D/g, '');
+  if (!digits) return false;
+  const data = load();
+  if (data.landlordPolicies && data.landlordPolicies[digits]) return true;
+  return (data.tickets || []).some(
+    (t) => String(t.landlordPhone || '').replace(/\D/g, '') === digits
+  );
+}
+
+// Landlord properties come from signup: each unit lists its address and the
+// tenant's name/phone. Match an incoming tenant phone to its property so the
+// ticket gets the address (for location-based dispatch) automatically.
+function findPropertyByTenantPhone(phone) {
+  const digits = String(phone || '').replace(/\D/g, '');
+  if (!digits) return null;
+  const data = load();
+  const policies = data.landlordPolicies || {};
+  for (const [llPhone, pol] of Object.entries(policies)) {
+    for (const p of (pol.properties || [])) {
+      if (String(p.tenantPhone || '').replace(/\D/g, '') === digits) {
+        return {
+          landlordPhone: llPhone,
+          landlordName: pol.name || null,
+          autoApproveLimit: pol.autoApproveLimit || biz.autoApproveDefault,
+          unit: p.unit || null,
+          address: p.address || null,
+          tenantName: p.tenantName || null,
+        };
+      }
+    }
+  }
+  return null;
+}
+
+function listLandlords() {
+  const data = load();
+  return Object.entries(data.landlordPolicies || {}).map(([phone, pol]) => ({
+    phone,
+    name: pol.name || null,
+    autoApproveLimit: pol.autoApproveLimit || biz.autoApproveDefault,
+    properties: pol.properties || [],
+  }));
 }
 
 function setTicketStatus(id, status) {
@@ -205,6 +262,25 @@ function setLandlordPolicy(phone, patch) {
   return getLandlordPolicy(key);
 }
 
+// Trade profiles for location-based dispatch. Each profile:
+// { id, name, trade, phone, serviceAreas: ['Toronto', 'M4B', ...] }.
+// Keyed by id.
+function getTradeProfiles() {
+  const data = load();
+  return Object.values(data.tradeProfiles || {});
+}
+
+function saveTradeProfile(profile) {
+  const data = load();
+  data.tradeProfiles = data.tradeProfiles || {};
+  const p = Object.assign({}, profile);
+  if (!p.id) p.id = 'trade-' + Date.now().toString(36);
+  if (!Array.isArray(p.serviceAreas)) p.serviceAreas = [];
+  data.tradeProfiles[p.id] = p;
+  save(data);
+  return p;
+}
+
 // One-shot test-data cleanup (used before real tenants go live).
 // Returns counts of what was removed. Landlord policies are business config,
 // not test data, so they survive the wipe.
@@ -231,10 +307,16 @@ module.exports = {
   getTicket,
   updateTicket,
   findAwaitingLandlordTicket,
+  findAwaitingLandlordTicketsByLandlord,
+  findPropertyByTenantPhone,
+  listLandlords,
+  isKnownLandlord,
   setTicketStatus,
   listConversations,
   getMessages,
   getLandlordPolicy,
   setLandlordPolicy,
+  getTradeProfiles,
+  saveTradeProfile,
   clearAllData,
 };

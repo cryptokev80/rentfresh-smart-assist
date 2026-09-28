@@ -44,6 +44,7 @@
   .badge.dispatched { background: #d1fae5; color: #065f46; }
   .badge.closed { background: #f4f4f5; color: #a1a1aa; }
   .badge.approved { background: #d1fae5; color: #065f46; }
+  .badge.auto-approved { background: #d1fae5; color: #065f46; }
   .badge.declined { background: #fee2e2; color: #b91c1c; }
   .badge.awaiting { background: #ffedd5; color: #9a3412; }
   .lsec { margin-top: 8px; border-top: 1px dashed #e4e4e7; padding-top: 8px; }
@@ -89,6 +90,18 @@
       <button data-f="lead">Leads</button>
     </div>
     <ul id="ticketList"></ul>
+    <h2 style="margin-top:14px">Landlords</h2>
+    <div id="landlordList"></div>
+    <div class="lsec">
+      <div class="lrow">
+        <input id="llPhone" placeholder="Landlord WhatsApp no.">
+        <input id="llName" placeholder="Name">
+      </div>
+      <div class="lrow"><input id="llCap" placeholder="Cap $ (default 350)"></div>
+      <div class="lrow"><textarea id="llProps" rows="3" style="flex:1;border:1px solid #e4e4e7;border-radius:6px;padding:5px 8px;font-size:12px" placeholder="Properties, one per line: unit | address | tenant name | tenant phone"></textarea></div>
+      <div class="lrow"><button class="ghost" id="saveLandlord">Save landlord</button></div>
+      <div class="lmeta">Click a landlord to load them into the form.</div>
+    </div>
   </section>
 </main>
 <script>
@@ -154,6 +167,9 @@ async function loadTickets() {
     (t.awaitingLandlord ? '<span class="badge awaiting">awaiting landlord</span>' : '') +
     '<div class="sum">' + esc(t.summary) + '</div>' +
     '<div class="meta">' + esc(t.tenantName) + ' · ' + esc(t.phone) + ' · ' + fmtTime(t.createdAt) + '</div>' +
+    (t.address ? '<div class="meta">' + esc(t.address) + (t.unit ? ' · ' + esc(t.unit) : '') + '</div>' : '') +
+    (t.quote ? '<div class="meta">Quote: $' + esc(t.quote.total) + ' ($' + esc(t.quote.labor) + ' labor + $' + esc(t.quote.materials) + ' materials)</div>' : '') +
+    (t.dispatch && t.dispatch.candidates && t.dispatch.candidates.length ? '<div class="meta">Nearby ' + esc(t.trade) + ': ' + esc(t.dispatch.candidates.map(c => c.name).join(', ')) + '</div>' : '') +
     (t.kind === 'maintenance' ? landlordBlock(t) : '') +
     '<div class="actions">' +
       (t.status === 'new' ? '<button data-id="' + t.id + '" data-s="dispatched">Dispatch</button>' : '') +
@@ -174,7 +190,13 @@ function landlordBlock(t) {
       '<input data-k="landlordName" placeholder="Landlord name" value="' + esc(t.landlordName) + '">' +
       '<input data-k="landlordPhone" placeholder="Landlord WhatsApp no." value="' + esc(t.landlordPhone) + '">' +
       '<input data-k="unit" placeholder="Unit" value="' + esc(t.unit) + '">' +
+      '<input data-k="autoApproveLimit" placeholder="Cap $" value="' + esc(t.autoApproveLimit) + '">' +
       '<button class="ghost" data-act="save-ll" data-id="' + t.id + '">Save</button>' +
+    '</div>' +
+    '<div class="lrow">' +
+      '<input data-q="labor" placeholder="Labor $" value="' + esc(t.quote && t.quote.labor) + '">' +
+      '<input data-q="materials" placeholder="Materials $" value="' + esc(t.quote && t.quote.materials) + '">' +
+      '<button class="ghost" data-act="set-quote" data-id="' + t.id + '">Set quote</button>' +
     '</div>' +
     '<div class="lrow">' +
       '<button class="ghost" data-act="preview-ll" data-id="' + t.id + '">Preview summary</button>' +
@@ -198,6 +220,13 @@ async function landlordAction(b) {
     const box = card.querySelector('.lprev');
     box.style.display = 'block';
     box.textContent = data.text;
+  } else if (b.dataset.act === 'set-quote') {
+    const body = {};
+    card.querySelectorAll('input[data-q]').forEach(i => { body[i.dataset.q] = i.value.trim(); });
+    const r = await jpost('/api/tickets/' + id + '/quote', body);
+    if (r.error) alert(r.error);
+    else alert('Quote $' + r.total + ' vs cap $' + r.limit + ': ' + r.decision);
+    loadTickets();
   } else if (b.dataset.act === 'send-ll') {
     if (!confirm('Send this summary to the landlord on WhatsApp?')) return;
     const r = await jpost('/api/tickets/' + id + '/send-to-landlord', {});
@@ -223,7 +252,52 @@ document.querySelectorAll('#ticketFilters button').forEach(b => b.addEventListen
 
 loadConvos();
 loadTickets();
-setInterval(() => { loadConvos(); loadTickets(); if (activePhone) selectConvo(activePhone); }, 8000);
+loadLandlords();
+document.getElementById('saveLandlord').addEventListener('click', saveLandlord);
+setInterval(() => { loadConvos(); loadTickets(); loadLandlords(); if (activePhone) selectConvo(activePhone); }, 8000);
+
+async function loadLandlords() {
+  const lls = await jget('/api/landlords');
+  const box = document.getElementById('landlordList');
+  box.innerHTML = lls.map(l =>
+    '<div class="ticket" data-ll="' + esc(l.phone) + '" style="cursor:pointer">' +
+    '<span class="id">' + esc(l.name || l.phone) + '</span>' +
+    '<div class="meta">' + esc(l.phone) + ' · cap $' + esc(l.autoApproveLimit) + '</div>' +
+    '<div class="meta">' + l.properties.map(p =>
+      esc((p.unit ? p.unit + ': ' : '') + p.address + (p.tenantName ? ' (' + p.tenantName + ')' : ''))
+    ).join('<br>') + '</div></div>'
+  ).join('') || '<div style="color:#a1a1aa;font-size:12px">No landlords yet.</div>';
+  box.querySelectorAll('[data-ll]').forEach(el => el.addEventListener('click', () => {
+    const l = lls.find(x => x.phone === el.dataset.ll);
+    if (!l) return;
+    document.getElementById('llPhone').value = l.phone;
+    document.getElementById('llName').value = l.name || '';
+    document.getElementById('llCap').value = l.autoApproveLimit;
+    document.getElementById('llProps').value = l.properties.map(p =>
+      [p.unit, p.address, p.tenantName, p.tenantPhone].join(' | ')
+    ).join('\n');
+  }));
+}
+
+async function saveLandlord() {
+  const phone = document.getElementById('llPhone').value.replace(/\D/g, '');
+  if (!phone) { alert('Landlord phone required'); return; }
+  const props = document.getElementById('llProps').value.split('\n').map(line => {
+    const parts = line.split('|').map(s => s.trim());
+    return {
+      unit: parts[0] || '',
+      address: parts[1] || '',
+      tenantName: parts[2] || '',
+      tenantPhone: (parts[3] || '').replace(/\D/g, ''),
+    };
+  }).filter(p => p.address || p.unit);
+  const body = { name: document.getElementById('llName').value.trim(), properties: props };
+  const cap = document.getElementById('llCap').value.trim();
+  if (cap) body.autoApproveLimit = cap;
+  const r = await jpost('/api/landlords/' + phone, body);
+  if (r.error) alert(r.error);
+  else { loadLandlords(); loadTickets(); }
+}
 </script>
 </body>
 </html>

@@ -15,6 +15,38 @@ const biz = require('./config');
 const AUTO_APPROVE_DEFAULT = biz.autoApproveDefault;
 
 // ---------------------------------------------------------------------------
+// NTE spending cap. A quote at or under the landlord's cap is auto-approved;
+// anything over needs the landlord's sign-off.
+// ---------------------------------------------------------------------------
+
+function evaluateQuote(limit, total) {
+  const lim = Number(limit) || AUTO_APPROVE_DEFAULT;
+  const tot = Number(total) || 0;
+  return { withinCap: tot <= lim, limit: lim, total: tot };
+}
+
+// ---------------------------------------------------------------------------
+// Location-based dispatch. Trade profiles carry serviceAreas (cities or
+// postal zones they cover). Candidates match the ticket's trade first, then
+// rank trades whose service area covers the tenant's address first.
+// ---------------------------------------------------------------------------
+
+function findCandidateTrades(store, ticket) {
+  const profiles = (store.getTradeProfiles ? store.getTradeProfiles() : [])
+    .filter((p) => p && p.trade === ticket.trade);
+  const addr = String(ticket.address || '').toLowerCase();
+  return profiles
+    .map((p) => ({
+      profile: p,
+      covers: addr && Array.isArray(p.serviceAreas)
+        ? p.serviceAreas.some((a) => addr.includes(String(a).toLowerCase()))
+        : false,
+    }))
+    .sort((a, b) => Number(b.covers) - Number(a.covers))
+    .map((x) => x.profile);
+}
+
+// ---------------------------------------------------------------------------
 // Emergency dispatch flow. Today: alert the owner (done by the caller via
 // flagForKevin) and record the dispatch on the ticket so the inbox shows it.
 // The trade-priority step is where the pro ping + calendar booking plugs in.
@@ -46,5 +78,7 @@ function startEmergencyDispatch(store, ticket) {
 
 module.exports = {
   AUTO_APPROVE_DEFAULT,
+  evaluateQuote,
+  findCandidateTrades,
   startEmergencyDispatch,
 };
