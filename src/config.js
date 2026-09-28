@@ -8,7 +8,7 @@
  * another JSON file). The engine code must never hardcode a business name,
  * owner name, phone, email, timezone, or hours: it reads them from here.
  *
- * RentFresh is client #1. A second business is a second JSON file, not a
+ * ProQue (by RentFresh) is client #1. A second business is a second JSON file, not a
  * second codebase.
  */
 
@@ -17,6 +17,7 @@ const path = require('path');
 
 const DEFAULTS = {
   businessName: 'Business',
+  brandLine: '',
   assistantName: 'Smart Assist',
   ownerName: 'the owner',
   serviceArea: 'the area',
@@ -67,6 +68,7 @@ function fill(template, vars) {
   const all = Object.assign(
     {
       businessName: biz.businessName,
+      brandLine: biz.brandLine,
       assistantName: biz.assistantName,
       ownerName: biz.ownerName,
       serviceArea: biz.serviceArea,

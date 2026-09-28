@@ -3,11 +3,11 @@
 /**
  * Business policies — now driven by config/business.json, not hardcoded.
  *
- * RentFresh values (set with Kevin 2026-09-23) live in the config file:
+ * ProQue values (set with Kevin, updated 2026-09-28) live in the config file:
  * - Business hours: Mon-Fri 9am-6pm America/Toronto. Closed weekends.
  * - After hours: the bot still answers and collects details, tells the sender
  *   when the team replies next, and still escalates true emergencies at once.
- * - Spending: default auto-approve $300 per landlord (adjustable per landlord).
+ * - Spending: default auto-approve $350 per landlord (adjustable per landlord).
  * - Emergencies: alert Kevin first, then start the dispatch flow.
  */
 

@@ -1,7 +1,7 @@
 'use strict';
 
 /**
- * RentFresh Smart Assist — concierge MVP.
+ * ProQue — maintenance triage concierge.
  * One company number, bot handles everything:
  *   emergency  -> safety instructions + emergency ticket + human flagged
  *   lead       -> capture details + lead ticket + Kevin notified
@@ -172,7 +172,7 @@ async function reply(to, text, opts) {
   }
   const idx = store.addMessage(to, 'out', 'text', out);
   try {
-    const result = await wa.sendText(to, text);
+    const result = await wa.sendText(to, out);
     const waId = result && result.messages && result.messages[0] ? result.messages[0].id : null;
     if (waId) store.updateMessage(to, idx, { waId, status: 'sent' });
     logEvent({ event: 'outbound', to, ok: true, dryRun: !!(result && result.dryRun), waId: waId || null });
