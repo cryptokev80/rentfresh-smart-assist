@@ -103,7 +103,6 @@ const TRADE_KEYWORDS = {
     'drain', 'clog', 'clogged', 'pipe', 'pipes', 'shower', 'tub', 'bathtub',
     'valve', 'puddle', 'damp', 'water stain', 'water heater', 'hot water',
     'running water', 'low water pressure', 'no water', 'pouring',
-    'plumber', 'plumbing',
   ],
   electrical: [
     'outlet', 'socket', 'plug', 'breaker', 'breakers', 'power', 'electricity',
@@ -258,32 +257,12 @@ function confirmationMessage(ticket) {
 }
 
 function questionsMessage(result) {
-  // One conversational exchange, not a numbered interrogation. The only
-  // thing we need from the tenant is timing: ASAP or scheduled.
-  let msg = 'Got it. ';
-  if (result.diyTip) msg += 'In the meantime, this is safe to try: ' + result.diyTip + ' ';
-  msg += 'Do you need someone out as soon as possible, or can this be scheduled for a regular visit?';
-  return msg;
-}
-
-// Reads the tenant's answer to the timing question above.
-// Returns 'urgent', 'routine', or null when they didn't say.
-function parseUrgencyAnswer(text) {
-  const s = ' ' + String(text || '').toLowerCase() + ' ';
-  const urgentHit = [
-    'asap', 'as soon as possible', 'as soon as you can', 'right away',
-    'right now', 'immediately', 'urgent', 'emergency', "can't wait",
-    'cannot wait', 'today', 'tonight', 'this morning', 'this afternoon',
-    'this evening',
-  ].some((p) => s.includes(p));
-  if (urgentHit) return 'urgent';
-  const routineHit = [
-    'schedul', 'can wait', 'not urgent', 'no rush', 'whenever',
-    'next week', 'regular visit', 'not a rush', 'take your time',
-    'ok for now', "it's ok for now",
-  ].some((p) => s.includes(p));
-  if (routineHit) return 'routine';
-  return null;
+  let msg = 'Thanks, I want to make sure the right pro comes. Two quick questions:\n';
+  result.questions.forEach((q, i) => {
+    msg += (i + 1) + '. ' + q + '\n';
+  });
+  if (result.diyTip) msg += '\nIn the meantime, this is safe to try: ' + result.diyTip;
+  return msg.trim();
 }
 
 // ---------------------------------------------------------------------------
@@ -583,38 +562,6 @@ function tenantQuoteMessage(ticket, approved) {
   });
 }
 
-// ---------------------------------------------------------------------------
-// Pro dispatch: the job card a matched trade gets on WhatsApp once a quote
-// is approved (by the landlord, or auto-approved under the NTE cap).
-// ---------------------------------------------------------------------------
-
-function proJobCardMessage(ticket, pro) {
-  const q = ticket.quote || { labor: 0, materials: 0, total: 0 };
-  const lines = [];
-  lines.push('New ProQue job for ' + (pro.company || pro.name) + ':');
-  lines.push('');
-  lines.push('Ticket ' + ticket.id + ' - ' + (TRADE_LABELS[ticket.trade] || ticket.trade));
-  if (ticket.address) lines.push('Address: ' + ticket.address + (ticket.unit ? ' (' + ticket.unit + ')' : ''));
-  if (ticket.summary) lines.push('Issue: ' + ticket.summary);
-  if (q.total > 0) {
-    lines.push(
-      'Quote: ' + fmtCAD(q.total) + ' total (' +
-      fmtCAD(q.labor) + ' labor + ' + fmtCAD(q.materials) + ' materials).'
-    );
-  }
-  lines.push('');
-  lines.push('Tenant: ' + (ticket.tenantName || 'Unknown') + (ticket.phone ? ' (' + ticket.phone + ')' : ''));
-  if (ticket.landlordName || ticket.landlordPhone) {
-    lines.push(
-      'Landlord: ' + (ticket.landlordName || 'Unknown') +
-      (ticket.landlordPhone ? ' (' + ticket.landlordPhone + ')' : '')
-    );
-  }
-  lines.push('');
-  lines.push('Reply here to confirm or ask questions. Kevin sees every reply.');
-  return lines.join('\n');
-}
-
 module.exports = {
   classify,
   confirmationMessage,
@@ -629,9 +576,7 @@ module.exports = {
   landlordSummaryMessage,
   parseLandlordDecision,
   parseCapChange,
-  parseUrgencyAnswer,
   tenantQuoteMessage,
-  proJobCardMessage,
   fmtCAD,
   isFollowupOnTicket,
   interimAdviceFor,
