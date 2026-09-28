@@ -351,9 +351,12 @@ async function finishTriage(from, convo, text) {
   const issue = convo.issue;
   const combined = issue.firstMessage + '\nTenant added: ' + text;
   const result = triage.classify(combined);
+  // The tenant just answered the timing question (ASAP vs scheduled):
+  // their answer refines the urgency.
+  const urgency = triage.parseUrgencyAnswer(text) || result.urgency;
   let ticket = store.createTicket({
     phone: from, tenantName: convo.name, kind: 'maintenance',
-    trade: result.trade, urgency: result.urgency,
+    trade: result.trade, urgency,
     summary: result.summary, photoIds: issue.photoIds || [],
   });
   ticket = enrichTicketFromProperty(ticket) || ticket;
@@ -534,32 +537,19 @@ async function handleImage(from, convo, msg) {
   }
 
   if (analysis) {
-    const questions = (analysis.questions || []).slice(0, 2);
-    if (questions.length === 0) {
-      let ticket = store.createTicket({
-        phone: from, tenantName: convo.name, kind: 'maintenance',
-        trade: analysis.trade || 'general', urgency: analysis.urgency || 'routine',
-        summary: analysis.summary || 'Issue reported by photo.',
-        photoIds: mediaId ? [mediaId] : [],
-      });
-      ticket = enrichTicketFromProperty(ticket) || ticket;
-      store.updateConversation(from, { state: 'idle', issue: null });
-      await reply(from, 'Thanks for the photo. ' + (analysis.likely_issue ? 'This looks like ' + analysis.likely_issue + '. ' : '') + triage.confirmationMessage(ticket));
-      return;
-    }
     store.updateConversation(from, {
       state: 'awaiting_info', exchanges: 1,
       issue: {
         trade: analysis.trade || 'general', urgency: analysis.urgency || 'routine',
         title: analysis.likely_issue || 'Issue from photo',
         summary: analysis.summary || 'Issue reported by photo.',
-        questions, firstMessage: caption || 'Photo sent by tenant.',
+        firstMessage: caption || 'Photo sent by tenant.',
         photoIds: mediaId ? [mediaId] : [],
       },
     });
     let m = 'Thanks for the photo. ';
     if (analysis.likely_issue) m += 'This looks like ' + analysis.likely_issue + '. ';
-    m += 'Two quick questions:\n' + questions.map((q, i) => (i + 1) + '. ' + q).join('\n');
+    m += 'Do you need someone out as soon as possible, or can this be scheduled for a regular visit?';
     await reply(from, m);
     return;
   }

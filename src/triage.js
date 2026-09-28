@@ -258,12 +258,32 @@ function confirmationMessage(ticket) {
 }
 
 function questionsMessage(result) {
-  let msg = 'Thanks, I want to make sure the right pro comes. Two quick questions:\n';
-  result.questions.forEach((q, i) => {
-    msg += (i + 1) + '. ' + q + '\n';
-  });
-  if (result.diyTip) msg += '\nIn the meantime, this is safe to try: ' + result.diyTip;
-  return msg.trim();
+  // One conversational exchange, not a numbered interrogation. The only
+  // thing we need from the tenant is timing: ASAP or scheduled.
+  let msg = 'Got it. ';
+  if (result.diyTip) msg += 'In the meantime, this is safe to try: ' + result.diyTip + ' ';
+  msg += 'Do you need someone out as soon as possible, or can this be scheduled for a regular visit?';
+  return msg;
+}
+
+// Reads the tenant's answer to the timing question above.
+// Returns 'urgent', 'routine', or null when they didn't say.
+function parseUrgencyAnswer(text) {
+  const s = ' ' + String(text || '').toLowerCase() + ' ';
+  const urgentHit = [
+    'asap', 'as soon as possible', 'as soon as you can', 'right away',
+    'right now', 'immediately', 'urgent', 'emergency', "can't wait",
+    'cannot wait', 'today', 'tonight', 'this morning', 'this afternoon',
+    'this evening',
+  ].some((p) => s.includes(p));
+  if (urgentHit) return 'urgent';
+  const routineHit = [
+    'schedul', 'can wait', 'not urgent', 'no rush', 'whenever',
+    'next week', 'regular visit', 'not a rush', 'take your time',
+    'ok for now', "it's ok for now",
+  ].some((p) => s.includes(p));
+  if (routineHit) return 'routine';
+  return null;
 }
 
 // ---------------------------------------------------------------------------
@@ -609,6 +629,7 @@ module.exports = {
   landlordSummaryMessage,
   parseLandlordDecision,
   parseCapChange,
+  parseUrgencyAnswer,
   tenantQuoteMessage,
   proJobCardMessage,
   fmtCAD,
