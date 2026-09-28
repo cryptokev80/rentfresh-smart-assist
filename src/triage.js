@@ -562,38 +562,6 @@ function tenantQuoteMessage(ticket, approved) {
   });
 }
 
-// ---------------------------------------------------------------------------
-// Pro dispatch: the job card a matched trade gets on WhatsApp once a quote
-// is approved (by the landlord, or auto-approved under the NTE cap).
-// ---------------------------------------------------------------------------
-
-function proJobCardMessage(ticket, pro) {
-  const q = ticket.quote || { labor: 0, materials: 0, total: 0 };
-  const lines = [];
-  lines.push('New ProQue job for ' + (pro.company || pro.name) + ':');
-  lines.push('');
-  lines.push('Ticket ' + ticket.id + ' - ' + (TRADE_LABELS[ticket.trade] || ticket.trade));
-  if (ticket.address) lines.push('Address: ' + ticket.address + (ticket.unit ? ' (' + ticket.unit + ')' : ''));
-  if (ticket.summary) lines.push('Issue: ' + ticket.summary);
-  if (q.total > 0) {
-    lines.push(
-      'Quote: ' + fmtCAD(q.total) + ' total (' +
-      fmtCAD(q.labor) + ' labor + ' + fmtCAD(q.materials) + ' materials).'
-    );
-  }
-  lines.push('');
-  lines.push('Tenant: ' + (ticket.tenantName || 'Unknown') + (ticket.phone ? ' (' + ticket.phone + ')' : ''));
-  if (ticket.landlordName || ticket.landlordPhone) {
-    lines.push(
-      'Landlord: ' + (ticket.landlordName || 'Unknown') +
-      (ticket.landlordPhone ? ' (' + ticket.landlordPhone + ')' : '')
-    );
-  }
-  lines.push('');
-  lines.push('Reply here to confirm or ask questions. Kevin sees every reply.');
-  return lines.join('\n');
-}
-
 module.exports = {
   classify,
   confirmationMessage,
@@ -609,7 +577,6 @@ module.exports = {
   parseLandlordDecision,
   parseCapChange,
   tenantQuoteMessage,
-  proJobCardMessage,
   fmtCAD,
   isFollowupOnTicket,
   interimAdviceFor,
