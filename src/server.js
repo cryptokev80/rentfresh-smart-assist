@@ -198,6 +198,13 @@ async function handleMessage(value, msg) {
 }
 
 async function handleText(from, convo, text) {
+  // 0. Operator commands from Kevin's own number (biz.ownerPhone).
+  // Authenticated by sender phone; never triaged as a tenant.
+  if (isOperator(from)) {
+    const handled = await handleOperatorCommand(from, text);
+    if (handled) return;
+  }
+
   // 1. Emergency always wins, regardless of intent.
   const result = triage.classify(text);
   logEvent({
@@ -540,6 +547,61 @@ async function handleImage(from, convo, msg) {
     },
   });
   await reply(from, "Thanks for the photo, I've attached it to your file. In one sentence, what's the problem?");
+}
+
+// --- Operator commands -------------------------------------------------------
+// Kevin manages trades by texting the bot from his own number. The sender
+// phone must match biz.ownerPhone, so these never get triaged as a tenant.
+
+function isOperator(from) {
+  const owner = String((biz && biz.ownerPhone) || '').replace(/\D/g, '');
+  return !!owner && String(from || '').replace(/\D/g, '') === owner;
+}
+
+function fmtTradeLine(p, i) {
+  const bits = [p.name, p.trade, '+' + p.phone];
+  if (p.company) bits.push(p.company);
+  return (i != null ? (i + 1) + '. ' : '') + bits.join(' - ');
+}
+
+async function handleOperatorCommand(from, text) {
+  const t = String(text || '').trim();
+  const m = t.match(/^(add trade|list trades)\b/i);
+  if (!m) return false;
+  const cmd = m[1].toLowerCase();
+  if (cmd === 'list trades') {
+    const trades = store.getTradeProfiles();
+    await reply(from, trades.length
+      ? 'Trades on file:\n' + trades.map((p, i) => fmtTradeLine(p, i)).join('\n')
+      : 'No trades on file yet. Text ADD TRADE to add one.');
+    return true;
+  }
+  // ADD TRADE name | trade | phone | company | email | hourly | minHours | areas
+  const parts = t.slice(m[0].length).split('|').map((s) => s.trim());
+  const [name, trade, phone, company, email, hourly, minimumHours, areas] = parts;
+  if (!name || !trade || !phone) {
+    await reply(from, 'Usage:\nADD TRADE name | trade | phone | company | email | hourly | min hours | areas\nOnly name, trade and phone are required. Example:\nADD TRADE Joe Locker | plumbing | 6473337087 | JSL Plumbing | jslplumbing25@gmail.com | 70 | 1.5 | Toronto, Mississauga, Etobicoke');
+    return true;
+  }
+  const rates = {};
+  const h = Number(hourly), mh = Number(minimumHours);
+  if (isFinite(h) && h > 0) rates.hourly = h;
+  if (isFinite(mh) && mh > 0) rates.minimumHours = mh;
+  const profile = store.saveTradeProfile({
+    name: String(name).slice(0, 120),
+    trade: String(trade).toLowerCase().slice(0, 40),
+    phone: String(phone).replace(/\D/g, ''),
+    company: company || undefined,
+    email: email || undefined,
+    rates: Object.keys(rates).length ? rates : undefined,
+    serviceAreas: areas ? areas.split(',').map((a) => a.trim()).filter(Boolean).map((a) => a.slice(0, 80)) : [],
+  });
+  let line = 'Saved: ' + fmtTradeLine(profile);
+  if (profile.rates && profile.rates.hourly) line += ' - $' + profile.rates.hourly + '/hr';
+  if (profile.rates && profile.rates.minimumHours) line += ', ' + profile.rates.minimumHours + ' hr min';
+  if (profile.serviceAreas && profile.serviceAreas.length) line += '\nAreas: ' + profile.serviceAreas.join(', ');
+  await reply(from, line);
+  return true;
 }
 
 // --- Inbox + API ---------------------------------------------------------------
