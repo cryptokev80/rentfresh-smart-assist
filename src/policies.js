@@ -46,6 +46,15 @@ function findCandidateTrades(store, ticket) {
     .map((x) => x.profile);
 }
 
+// Find a trade profile by phone (digits). Used so a pro replying to a job
+// card is never triaged as a new tenant; their reply goes to Kevin.
+function findProByPhone(store, phone) {
+  const digits = String(phone || '').replace(/\D/g, '');
+  if (!digits) return null;
+  return (store.getTradeProfiles ? store.getTradeProfiles() : [])
+    .find((p) => p && String(p.phone || '').replace(/\D/g, '') === digits) || null;
+}
+
 // ---------------------------------------------------------------------------
 // Emergency dispatch flow. Today: alert the owner (done by the caller via
 // flagForKevin) and record the dispatch on the ticket so the inbox shows it.
@@ -80,5 +89,6 @@ module.exports = {
   AUTO_APPROVE_DEFAULT,
   evaluateQuote,
   findCandidateTrades,
+  findProByPhone,
   startEmergencyDispatch,
 };
