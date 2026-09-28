@@ -158,21 +158,12 @@ app.post('/webhook', (req, res) => {
   })();
 });
 
-async function reply(to, text, opts) {
-  // After-hours note: appended at most once per day per conversation so it
-  // informs without spamming every reply.
-  let out = text;
-  if (opts && opts.hoursNote) {
-    const day = policies.torontoDayKey(new Date());
-    const convo = store.getConversation(to);
-    if (convo.hoursNoteDay !== day) {
-      out += '\n\n' + policies.afterHoursNote();
-      store.updateConversation(to, { hoursNoteDay: day });
-    }
-  }
-  const idx = store.addMessage(to, 'out', 'text', out);
+async function reply(to, text) {
+  // ProQue triages 24/7: every message gets an answer right away, no
+  // business-hours note. Emergencies escalate immediately.
+  const idx = store.addMessage(to, 'out', 'text', text);
   try {
-    const result = await wa.sendText(to, out);
+    const result = await wa.sendText(to, text);
     const waId = result && result.messages && result.messages[0] ? result.messages[0].id : null;
     if (waId) store.updateMessage(to, idx, { waId, status: 'sent' });
     logEvent({ event: 'outbound', to, ok: true, dryRun: !!(result && result.dryRun), waId: waId || null });
@@ -192,24 +183,21 @@ async function handleMessage(value, msg) {
   const contact = value.contacts && value.contacts[0];
   const name = (contact && contact.profile && contact.profile.name) || 'Unknown';
   const convo = store.getConversation(from, name);
-  // Business-hours policy: after hours the bot still answers and collects
-  // details, with a note about when the team replies. Emergencies always
-  // escalate immediately, note or not.
-  const afterHours = !policies.isBusinessHours();
+  // ProQue triages 24/7: the bot always answers and collects details.
+  // Emergencies escalate immediately.
 
   if (msg.type === 'text' && msg.text && msg.text.body) {
     store.addMessage(from, 'in', 'text', msg.text.body);
-    await handleText(from, convo, msg.text.body, { afterHours });
+    await handleText(from, convo, msg.text.body);
   } else if (msg.type === 'image' && msg.image) {
-    await handleImage(from, convo, msg, { afterHours });
+    await handleImage(from, convo, msg);
   } else {
     store.addMessage(from, 'in', msg.type || 'unknown', '');
-    await reply(from, biz.fill(biz.messaging.unknownMedia), { hoursNote: afterHours });
+    await reply(from, biz.fill(biz.messaging.unknownMedia));
   }
 }
 
-async function handleText(from, convo, text, ctx) {
-  const afterHours = !!(ctx && ctx.afterHours);
+async function handleText(from, convo, text) {
   // 1. Emergency always wins, regardless of intent.
   const result = triage.classify(text);
   logEvent({
@@ -241,14 +229,14 @@ async function handleText(from, convo, text, ctx) {
 
   // 3. Explicit human handoff.
   if (triage.wantsHuman(text)) {
-    await reply(from, biz.fill(biz.messaging.humanHandoff), { hoursNote: afterHours });
+    await reply(from, biz.fill(biz.messaging.humanHandoff));
     await flagForKevin(from, 'human handoff requested');
     return;
   }
 
   // 4. Continuing an in-progress flow.
-  if (convo.state === 'awaiting_info' && convo.issue) return finishTriage(from, convo, text, ctx);
-  if (convo.state === 'awaiting_lead' && convo.lead) return finishLead(from, convo, text, ctx);
+  if (convo.state === 'awaiting_info' && convo.issue) return finishTriage(from, convo, text);
+  if (convo.state === 'awaiting_lead' && convo.lead) return finishLead(from, convo, text);
 
   // 4b. Simple acknowledgment ("ok", "thanks") with no active flow:
   // close politely instead of starting a brand-new triage.
@@ -263,7 +251,7 @@ async function handleText(from, convo, text, ctx) {
       state: 'awaiting_lead', exchanges: 1,
       lead: { firstMessage: text },
     });
-    await reply(from, triage.leadQuestionsMessage(), { hoursNote: afterHours });
+    await reply(from, triage.leadQuestionsMessage());
     return;
   }
 
@@ -273,7 +261,7 @@ async function handleText(from, convo, text, ctx) {
   // for a maintenance bot since Kevin reviews every conversation anyway.
   if (triage.isGeneralInquiry(text)) {
     store.updateConversation(from, { state: 'idle', issue: null, lead: null, exchanges: 0 });
-    await reply(from, triage.generalReplyMessage(), { hoursNote: afterHours });
+    await reply(from, triage.generalReplyMessage());
     return;
   }
 
@@ -286,11 +274,10 @@ async function handleText(from, convo, text, ctx) {
       firstMessage: text, photoIds: [],
     },
   });
-  await reply(from, triage.questionsMessage(result), { hoursNote: afterHours });
+  await reply(from, triage.questionsMessage(result));
 }
 
-async function finishTriage(from, convo, text, ctx) {
-  const afterHours = !!(ctx && ctx.afterHours);
+async function finishTriage(from, convo, text) {
   const issue = convo.issue;
   const combined = issue.firstMessage + '\nTenant added: ' + text;
   const result = triage.classify(combined);
@@ -302,11 +289,10 @@ async function finishTriage(from, convo, text, ctx) {
   store.updateConversation(from, { state: 'idle', issue: null, exchanges: 0 });
   let msg = triage.confirmationMessage(ticket);
   if (result.diyTip) msg += '\n\nSafe to try in the meantime: ' + result.diyTip;
-  await reply(from, msg, { hoursNote: afterHours });
+  await reply(from, msg);
 }
 
-async function finishLead(from, convo, text, ctx) {
-  const afterHours = !!(ctx && ctx.afterHours);
+async function finishLead(from, convo, text) {
   const ticket = store.createTicket({
     phone: from, tenantName: convo.name, kind: 'lead',
     trade: 'general', urgency: 'routine',
@@ -316,8 +302,7 @@ async function finishLead(from, convo, text, ctx) {
   await flagForKevin(from, 'new landlord lead (' + ticket.id + ')');
   await reply(
     from,
-    biz.fill(biz.messaging.leadReceived, { ticketId: ticket.id }),
-    { hoursNote: afterHours }
+    biz.fill(biz.messaging.leadReceived, { ticketId: ticket.id })
   );
 }
 
@@ -346,8 +331,7 @@ async function handleLandlordReply(from, convo, text, ticket) {
   await reply(from, biz.fill(biz.messaging.landlordAmbiguous));
 }
 
-async function handleImage(from, convo, msg, ctx) {
-  const afterHours = !!(ctx && ctx.afterHours);
+async function handleImage(from, convo, msg) {
   const caption = (msg.image && msg.image.caption) || '';
   const mediaId = msg.image && msg.image.id;
   store.addMessage(from, 'in', 'image', caption ? '[photo] ' + caption : '[photo]');
@@ -381,7 +365,7 @@ async function handleImage(from, convo, msg, ctx) {
         photoIds: mediaId ? [mediaId] : [],
       });
       store.updateConversation(from, { state: 'idle', issue: null });
-      await reply(from, 'Thanks for the photo. ' + (analysis.likely_issue ? 'This looks like ' + analysis.likely_issue + '. ' : '') + triage.confirmationMessage(ticket), { hoursNote: afterHours });
+      await reply(from, 'Thanks for the photo. ' + (analysis.likely_issue ? 'This looks like ' + analysis.likely_issue + '. ' : '') + triage.confirmationMessage(ticket));
       return;
     }
     store.updateConversation(from, {
@@ -397,7 +381,7 @@ async function handleImage(from, convo, msg, ctx) {
     let m = 'Thanks for the photo. ';
     if (analysis.likely_issue) m += 'This looks like ' + analysis.likely_issue + '. ';
     m += 'Two quick questions:\n' + questions.map((q, i) => (i + 1) + '. ' + q).join('\n');
-    await reply(from, m, { hoursNote: afterHours });
+    await reply(from, m);
     return;
   }
 
@@ -411,7 +395,7 @@ async function handleImage(from, convo, msg, ctx) {
       photoIds: mediaId ? [mediaId] : [],
     },
   });
-  await reply(from, "Thanks for the photo, I've attached it to your file. In one sentence, what's the problem?", { hoursNote: afterHours });
+  await reply(from, "Thanks for the photo, I've attached it to your file. In one sentence, what's the problem?");
 }
 
 // --- Inbox + API ---------------------------------------------------------------

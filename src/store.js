@@ -8,6 +8,7 @@
 
 const fs = require('fs');
 const path = require('path');
+const biz = require('./config');
 
 const DATA_DIR = process.env.DATA_DIR || path.join(__dirname, '..');
 const DATA_FILE = path.join(DATA_DIR, 'data.json');
@@ -187,12 +188,12 @@ function getMessages(phone) {
   return convo ? convo.messages : [];
 }
 
-// Per-landlord spending policy. Kevin sets the default ($300); individual
-// landlords can override. Keyed by landlord phone (digits only).
+// Per-landlord spending policy. Default comes from config (ProQue: $350);
+// individual landlords can override. Keyed by landlord phone (digits only).
 function getLandlordPolicy(phone) {
   const data = load();
   const all = data.landlordPolicies || {};
-  return Object.assign({ autoApproveLimit: 300 }, all[String(phone || '')] || {});
+  return Object.assign({ autoApproveLimit: biz.autoApproveDefault }, all[String(phone || '')] || {});
 }
 
 function setLandlordPolicy(phone, patch) {

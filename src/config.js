@@ -22,8 +22,6 @@ const DEFAULTS = {
   ownerName: 'the owner',
   serviceArea: 'the area',
   timezone: 'America/Toronto',
-  timezoneLabel: 'local time',
-  businessHours: { days: ['Mon', 'Tue', 'Wed', 'Thu', 'Fri'], open: '09:00', close: '18:00' },
   contact: { phone: '', email: '' },
   alertEmail: '',
   alertFrom: 'Smart Assist Alerts <onboarding@resend.dev>',
@@ -74,7 +72,6 @@ function fill(template, vars) {
       serviceArea: biz.serviceArea,
       customerNoun: biz.customerNoun,
       approverNoun: biz.approverNoun,
-      timezoneLabel: biz.timezoneLabel,
     },
     vars || {}
   );
