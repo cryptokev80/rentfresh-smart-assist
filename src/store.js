@@ -75,10 +75,6 @@ function addMessage(phone, direction, type, body, opts) {
     waId: (opts && opts.waId) || null, // WhatsApp message id (wamid.*)
     status: (opts && opts.status) || null, // sent | delivered | read | failed
     statusError: (opts && opts.statusError) || null,
-    // Trade<->tenant relay marker: { ticket, from: 'pro'|'tenant', at }.
-    // Present on every forwarded copy so relayed messages are visible in
-    // the inbox and can never be re-forwarded.
-    relay: (opts && opts.relay) || null,
   };
   convo.messages.push(msg);
   if (convo.messages.length > 200) convo.messages = convo.messages.slice(-200);
@@ -222,37 +218,6 @@ function findOpenTicketByPhone(phone) {
   );
 }
 
-// Relay: the most recent ticket actively dispatched to this pro's phone.
-// The relay is live only while the ticket is dispatched to that pro;
-// closing the ticket, or a failed dispatch, ends it.
-function findRelayTicketByProPhone(proPhone) {
-  const digits = String(proPhone || '').replace(/\D/g, '');
-  if (!digits) return null;
-  const list = load().tickets.filter(
-    (t) =>
-      t.status === 'dispatched' &&
-      t.dispatch &&
-      t.dispatch.status === 'dispatched' &&
-      String(t.assignedProPhone || '').replace(/\D/g, '') === digits
-  );
-  return list[0] || null; // tickets are stored newest-first
-}
-
-// Relay: the most recent actively dispatched ticket for this tenant phone.
-function findRelayTicketByTenantPhone(phone) {
-  const digits = String(phone || '').replace(/\D/g, '');
-  if (!digits) return null;
-  const list = load().tickets.filter(
-    (t) =>
-      t.status === 'dispatched' &&
-      t.dispatch &&
-      t.dispatch.status === 'dispatched' &&
-      t.assignedProPhone &&
-      String(t.phone || '').replace(/\D/g, '') === digits
-  );
-  return list[0] || null;
-}
-
 function listLandlords() {
   const data = load();
   return Object.entries(data.landlordPolicies || {}).map(([phone, pol]) => ({
@@ -322,9 +287,7 @@ function saveTradeProfile(profile) {
   const data = load();
   data.tradeProfiles = data.tradeProfiles || {};
   const p = Object.assign({}, profile);
-  // Unique even when two profiles are saved in the same millisecond (the
-  // old Date.now()-only id could collide and silently drop a trade).
-  if (!p.id) p.id = 'trade-' + Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
+  if (!p.id) p.id = 'trade-' + Date.now().toString(36);
   if (!Array.isArray(p.serviceAreas)) p.serviceAreas = [];
   data.tradeProfiles[p.id] = p;
   save(data);
@@ -359,8 +322,6 @@ module.exports = {
   findAwaitingLandlordTicket,
   findAwaitingLandlordTicketsByLandlord,
   findOpenTicketByPhone,
-  findRelayTicketByProPhone,
-  findRelayTicketByTenantPhone,
   findPropertyByTenantPhone,
   listLandlords,
   isKnownLandlord,
