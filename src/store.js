@@ -205,6 +205,19 @@ function findPropertyByTenantPhone(phone) {
   return null;
 }
 
+function findOpenTicketByPhone(phone) {
+  const digits = String(phone || '').replace(/\D/g, '');
+  if (!digits) return null;
+  return (
+    load().tickets.find(
+      (t) =>
+        (t.status === 'new' || t.status === 'dispatched') &&
+        (String(t.phone || '').replace(/\D/g, '') === digits ||
+          String(t.landlordPhone || '').replace(/\D/g, '') === digits)
+    ) || null
+  );
+}
+
 function listLandlords() {
   const data = load();
   return Object.entries(data.landlordPolicies || {}).map(([phone, pol]) => ({
@@ -308,6 +321,7 @@ module.exports = {
   updateTicket,
   findAwaitingLandlordTicket,
   findAwaitingLandlordTicketsByLandlord,
+  findOpenTicketByPhone,
   findPropertyByTenantPhone,
   listLandlords,
   isKnownLandlord,

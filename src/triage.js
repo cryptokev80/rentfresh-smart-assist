@@ -110,7 +110,7 @@ const TRADE_KEYWORDS = {
     'dimmer', 'ceiling fan',
   ],
   hvac: [
-    'heat', 'heating', 'furnace', 'thermostat', 'cold', 'freezing',
+    'heat', 'heating', 'furnace', 'heater', 'thermostat', 'cold', 'freezing',
     'air conditioner', 'a/c', 'ac not', 'radiator', 'baseboard', 'vent',
     'no heat', 'too hot',
   ],
@@ -160,13 +160,25 @@ const DIY_SAFE = [
   },
 ];
 
+function escapeRegExp(s) {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+// Whole-word keyword match: 'vent' must not fire inside 'prevent',
+// 'heat' must not fire inside 'heater'. Allows a trailing plural
+// (faucet/faucets, switch/switches).
+function keywordHit(text, kw) {
+  return new RegExp('\\b' + escapeRegExp(kw) + '(?:es|s)?\\b', 'i').test(text);
+}
+
 function scoreTrades(padded) {
+  const text = String(padded || '');
   let best = 'general';
   let bestScore = 0;
   for (const [trade, keywords] of Object.entries(TRADE_KEYWORDS)) {
     let score = 0;
     for (const kw of keywords) {
-      if (padded.includes(kw)) score += kw.includes(' ') ? 3 : 1; // multi-word matches weigh more
+      if (keywordHit(text, kw)) score += kw.includes(' ') ? 3 : 1; // multi-word matches weigh more
     }
     if (score > bestScore) {
       bestScore = score;
@@ -251,6 +263,50 @@ function questionsMessage(result) {
   });
   if (result.diyTip) msg += '\nIn the meantime, this is safe to try: ' + result.diyTip;
   return msg.trim();
+}
+
+// ---------------------------------------------------------------------------
+// Follow-ups on an open ticket. After a ticket is created the conversation
+// goes idle; when the tenant then asks a question ("can I do anything in
+// the meantime?") it must be answered in the ticket's context, not fed
+// through a fresh triage.
+// ---------------------------------------------------------------------------
+
+const FOLLOWUP_PATTERNS = [
+  'can i do anything', 'what can i do', 'what should i do', 'should i do anything',
+  'in the meantime', 'meanwhile', 'until the pro', 'until someone',
+  'prevent more damage', 'prevent further damage', 'stop it from getting worse',
+  'any update', 'status of', 'what is the status', "what's the status",
+  'when will', 'when is the', 'has anyone', 'did anyone', 'is someone coming',
+];
+
+function isFollowupOnTicket(text) {
+  const str = String(text || '');
+  // A message that names a specific trade with real keyword hits is a new
+  // issue report, not a follow-up.
+  if (scoreTrades(str) !== 'general') return false;
+  const padded = ' ' + str.toLowerCase() + ' ';
+  if (padded.includes('?')) return true;
+  return FOLLOWUP_PATTERNS.some((p) => padded.includes(p));
+}
+
+// Safe interim guidance per trade while the tenant waits for the pro.
+const INTERIM_ADVICE = {
+  plumbing:
+    'If water is still flowing, shut the valve under the sink or behind the toilet if you can do it safely. ' +
+    'Put a towel or bucket under the drip and keep the area clear for the pro.',
+  electrical:
+    'Do not touch the outlet, switch, or breaker panel. If you smell burning or see smoke, leave the room and tell me right away.',
+  hvac:
+    'Leave the thermostat where it is. If you smell gas, leave the unit immediately and tell me.',
+  appliance:
+    'If you can unplug it safely, do. Keep fridge and freezer doors closed to hold the cold.',
+  general:
+    'A photo of the issue helps the pro come prepared. Otherwise just keep the area clear.',
+};
+
+function interimAdviceFor(trade) {
+  return INTERIM_ADVICE[trade] || INTERIM_ADVICE.general;
 }
 
 // ---------------------------------------------------------------------------
@@ -522,6 +578,8 @@ module.exports = {
   parseCapChange,
   tenantQuoteMessage,
   fmtCAD,
+  isFollowupOnTicket,
+  interimAdviceFor,
   TRADE_LABELS,
   URGENCY_LABELS,
   NEXT_STEP,

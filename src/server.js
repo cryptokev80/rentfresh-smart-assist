@@ -276,6 +276,15 @@ async function handleText(from, convo, text) {
     return;
   }
 
+  // 6b. Follow-up on an open ticket: the tenant asks a question or checks
+  // status instead of reporting something new. Answer in the ticket's
+  // context instead of starting a fresh triage.
+  const openTicket = store.findOpenTicketByPhone(from);
+  if (openTicket && triage.isFollowupOnTicket(text)) {
+    await handleTicketFollowup(from, openTicket, text);
+    return;
+  }
+
   // 7. Default: maintenance triage.
   store.updateConversation(from, {
     state: 'awaiting_info', exchanges: 1,
@@ -286,6 +295,30 @@ async function handleText(from, convo, text) {
     },
   });
   await reply(from, triage.questionsMessage(result));
+}
+
+function ticketStatusLabel(ticket) {
+  if (ticket.status === 'dispatched') return 'assigned to a pro';
+  if (ticket.awaitingLandlord) return "waiting on the landlord's approval";
+  return 'logged and being scheduled';
+}
+
+async function handleTicketFollowup(from, ticket, text) {
+  const lower = String(text || '').toLowerCase();
+  if (/any update|status|when will|when is|has anyone|did anyone|someone coming/.test(lower)) {
+    await reply(
+      from,
+      'Ticket ' + ticket.id + ' is ' + ticketStatusLabel(ticket) +
+        '. The pro will confirm a time with you.'
+    );
+    return;
+  }
+  await reply(
+    from,
+    'Noted on ticket ' + ticket.id + '. ' +
+      triage.interimAdviceFor(ticket.trade) +
+      ' The pro will confirm a time with you.'
+  );
 }
 
 async function finishTriage(from, convo, text) {
