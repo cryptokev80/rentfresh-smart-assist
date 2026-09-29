@@ -46,4 +46,10 @@ for (const trade of ['plumbing', 'electrical', 'hvac', 'appliance', 'general']) 
   assert.ok(advice && advice.length > 20, 'missing interim advice for ' + trade);
 }
 
+// 7. Mid-flow question reply: answers conversationally and re-asks timing.
+const mid = triage.midFlowQuestionReply('plumbing');
+assert.ok(mid.includes('the plumber will contact you'), 'mid-flow reply names the plumber, got: ' + mid);
+assert.ok(mid.includes('as soon as possible'), 'mid-flow reply re-asks the timing question');
+assert.ok(!mid.includes('---'), 'no em dashes in mid-flow reply');
+
 console.log('test-followup: all assertions passed');
