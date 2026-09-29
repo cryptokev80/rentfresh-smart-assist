@@ -16,6 +16,7 @@ const triage = require('../src/triage');
 function route(text) {
   const result = triage.classify(text);
   if (result.emergency) return 'emergency';
+  if (triage.isGreeting(text)) return 'greeting';
   if (triage.wantsHuman(text)) return 'human';
   if (triage.isAcknowledgment(text)) return 'acknowledgment';
   if (triage.isLeadInquiry(text)) return 'lead';
@@ -26,11 +27,15 @@ function route(text) {
 const biz = require('../src/config');
 
 const cases = [
-  // --- NEW: general business route ---
-  ['Hi', 'general'],
-  ['Hello', 'general'],
-  ['Hey', 'general'],
-  ['Good morning', 'general'],
+  // --- NEW: bare greetings get the warm greeting, never general/triage ---
+  ['Hi', 'greeting'],
+  ['Hello', 'greeting'],
+  ['HELLO', 'greeting'],
+  ['Hey', 'greeting'],
+  ['hey!', 'greeting'],
+  ['Good morning', 'greeting'],
+  ['good evening', 'greeting'],
+  ['Yo', 'greeting'],
   ['What are your hours?', 'general'],
   ['What do you do?', 'general'],
   ['What is ' + biz.businessName + '?', 'general'],
