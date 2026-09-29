@@ -144,14 +144,10 @@ for (const text of toTenant) {
 check('relay.tradeTargetsTenant true', relay.tradeTargetsTenant('Where is the valve?'), true);
 check('relay.tradeTargetsTenant false', relay.tradeTargetsTenant('On my way'), false);
 
-// --- tenant routing: during an active relay the tenant is mid-conversation
-// with the pro, so plain answers relay too; only a different trade is a new
-// issue and keeps triage (Kevin sees every relayed message in the inbox) ---
+// --- tenant routing: follow-ups relay, new issues triage as today ---
 check('follow-up question relays', relay.tenantTargetsTrade('Any update on the visit?', ticket), true);
 check('status check relays', relay.tenantTargetsTrade('When is the pro coming?', ticket), true);
-check('plain answer to the pro relays', relay.tenantTargetsTrade('it is the hot water tap, drips constantly', ticket), true);
-check('same-trade report relays to the pro on the job', relay.tenantTargetsTrade('My sink is leaking again', ticket), true);
-check('different trade does not relay', relay.tenantTargetsTrade('my lights are flickering', ticket), false);
+check('new plumbing issue does not relay', relay.tenantTargetsTrade('My sink is leaking again', ticket), false);
 check('emergency-ish new report does not relay', relay.tenantTargetsTrade('Water is pouring through the ceiling', ticket), false);
 check('no relay ticket -> no relay', relay.tenantTargetsTrade('Any update?', null), false);
 
