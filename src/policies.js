@@ -25,6 +25,24 @@ function evaluateQuote(limit, total) {
   return { withinCap: tot <= lim, limit: lim, total: tot };
 }
 
+// Idempotency for the inbox Set-quote action. A double-tap must not
+// double-notify the tenant or double-dispatch the trade.
+// Returns { action: 'reject', reason } when the ticket already went out,
+// { action: 'duplicate', decision } when the same total was already quoted
+// (safe to report the existing outcome, no side effects),
+// or { action: 'proceed' } for a genuinely new or changed quote.
+function quoteSubmissionState(ticket, total) {
+  if (ticket && ticket.dispatch && ticket.dispatch.status === 'dispatched') {
+    return { action: 'reject', reason: 'ticket already dispatched' };
+  }
+  if (ticket && ticket.quote && Number(ticket.quote.total) === Number(total)) {
+    const decision = ticket.landlordDecision === 'auto-approved' ? 'auto-approved'
+      : ticket.awaitingLandlord ? 'sent-to-landlord' : 'needs-landlord';
+    return { action: 'duplicate', decision };
+  }
+  return { action: 'proceed' };
+}
+
 // ---------------------------------------------------------------------------
 // Location-based dispatch. Trade profiles carry serviceAreas (cities or
 // postal zones they cover). Candidates match the ticket's trade first, then
@@ -88,6 +106,7 @@ function startEmergencyDispatch(store, ticket) {
 module.exports = {
   AUTO_APPROVE_DEFAULT,
   evaluateQuote,
+  quoteSubmissionState,
   findCandidateTrades,
   findProByPhone,
   startEmergencyDispatch,

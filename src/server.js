@@ -964,6 +964,15 @@ app.post('/api/tickets/:id/quote', auth, async (req, res) => {
     return res.status(400).json({ error: 'labor and materials must be non-negative numbers' });
   }
   const total = Math.round((labor + materials) * 100) / 100;
+  // Idempotency: a double-tap on Set quote must not double-notify the
+  // tenant or double-dispatch the trade.
+  const sub = policies.quoteSubmissionState(ticket, total);
+  if (sub.action === 'reject') {
+    return res.status(409).json({ error: sub.reason });
+  }
+  if (sub.action === 'duplicate') {
+    return res.json({ id: ticket.id, decision: sub.decision, total, limit: ticket.autoApproveLimit, duplicate: true });
+  }
   const limit = ticket.autoApproveLimit ||
     store.getLandlordPolicy(ticket.landlordPhone || '').autoApproveLimit;
   const check = policies.evaluateQuote(limit, total);

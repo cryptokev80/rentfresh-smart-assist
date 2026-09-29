@@ -56,6 +56,23 @@ check('dispatch flow emergency', d.flow, 'emergency');
 check('dispatch prioritizes plumber', d.priorityTrade, 'plumbing');
 check('dispatch recorded on ticket', store.getTicket(t.id).dispatch.priorityTrade, 'plumbing');
 
+// --- quote idempotency (double-tap on Set quote) ---
+const q1 = store.createTicket({ phone: '19995550102', kind: 'maintenance', trade: 'plumbing', summary: 'drip' });
+check('fresh quote proceeds', policies.quoteSubmissionState(q1, 105).action, 'proceed');
+store.updateTicket(q1.id, { quote: { labor: 100, materials: 5, total: 105 }, landlordDecision: 'auto-approved' });
+const dup = policies.quoteSubmissionState(store.getTicket(q1.id), 105);
+check('same total is duplicate', dup.action, 'duplicate');
+check('duplicate reports auto-approved', dup.decision, 'auto-approved');
+check('changed total proceeds', policies.quoteSubmissionState(store.getTicket(q1.id), 200).action, 'proceed');
+const q2 = store.createTicket({ phone: '19995550103', kind: 'maintenance', trade: 'plumbing', summary: 'drip' });
+store.updateTicket(q2.id, { quote: { labor: 400, materials: 0, total: 400 }, awaitingLandlord: true });
+check('duplicate while awaiting landlord', policies.quoteSubmissionState(store.getTicket(q2.id), 400).decision, 'sent-to-landlord');
+const q3 = store.createTicket({ phone: '19995550104', kind: 'maintenance', trade: 'plumbing', summary: 'drip' });
+store.updateTicket(q3.id, { quote: { labor: 100, materials: 5, total: 105 }, dispatch: { status: 'dispatched' } });
+const rej = policies.quoteSubmissionState(store.getTicket(q3.id), 105);
+check('dispatched ticket rejects re-quote', rej.action, 'reject');
+check('reject reason names dispatch', rej.reason, 'ticket already dispatched');
+
 fs.rmSync(tmpDir, { recursive: true, force: true });
 
 if (failures) {
