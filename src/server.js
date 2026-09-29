@@ -271,6 +271,23 @@ async function handleText(from, convo, text) {
     return;
   }
 
+  // 1c. A bare greeting ("hi", "hello") opens the conversation. It must
+  // never be mistaken for a landlord decision or anything else: answer
+  // warmly, and nudge about a pending quote decision if they have one.
+  if (triage.isGreeting(text)) {
+    const awaiting = store.findAwaitingLandlordTicketsByLandlord(from) || [];
+    let msg = biz.fill(biz.messaging.greeting);
+    if (awaiting.length) {
+      const t0 = awaiting[0];
+      const q = t0.quote || {};
+      msg += ' You have a quote' + (q.total ? ' of ' + triage.fmtCAD(q.total) : '') +
+        ' awaiting your decision on ticket ' + t0.id + '. Reply APPROVE or DECLINE.';
+    }
+    store.updateConversation(from, { state: 'idle', issue: null, lead: null, exchanges: 0 });
+    await reply(from, msg);
+    return;
+  }
+
   // 2. Landlord changing their NTE cap by text ("set my cap to 500").
   // Only known landlords; everyone else falls through to normal handling.
   // Checked before the approve/decline flow so a cap change never gets
