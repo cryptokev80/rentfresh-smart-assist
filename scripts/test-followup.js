@@ -31,6 +31,15 @@ assert.strictEqual(triage.isFollowupOnTicket('any update on this?'), true);
 assert.strictEqual(triage.isFollowupOnTicket('my toilet is clogged too'), false);
 assert.strictEqual(triage.isFollowupOnTicket('the faucet is leaking worse now'), false);
 
+// 5b. Questions naming the trade are follow-ups, not new issues
+// (regression: "Will the plumbing contact me?" restarted triage).
+assert.strictEqual(triage.isFollowupOnTicket('Will the plumbing contact me?'), true);
+assert.strictEqual(triage.isFollowupOnTicket('will the plumber call me'), true);
+assert.strictEqual(triage.isFollowupOnTicket('has the electrician contacted you'), true);
+assert.strictEqual(triage.isFollowupOnTicket('the plumber still has not called me'), true);
+// Plain statements naming the trade stay new-issue reports.
+assert.strictEqual(triage.isFollowupOnTicket('my plumber friend says the tap needs replacing'), false);
+
 // 6. Interim advice exists for every trade.
 for (const trade of ['plumbing', 'electrical', 'hvac', 'appliance', 'general']) {
   const advice = triage.interimAdviceFor(trade);

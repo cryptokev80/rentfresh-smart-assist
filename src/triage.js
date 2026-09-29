@@ -18,6 +18,18 @@ const TRADE_LABELS = {
   general: 'General maintenance',
 };
 
+// The person to name when telling a tenant who will contact them.
+const TRADE_PERSON = {
+  plumbing: 'plumber',
+  electrical: 'electrician',
+  hvac: 'heating and cooling tech',
+  appliance: 'appliance tech',
+  general: 'pro',
+};
+function tradePersonLabel(trade) {
+  return TRADE_PERSON[trade] || 'pro';
+}
+
 const URGENCY_LABELS = {
   emergency: 'Emergency',
   urgent: 'Urgent',
@@ -248,12 +260,12 @@ const NEXT_STEP = {
   routine: "We'll schedule this and confirm a time with you.",
 };
 
-function confirmationMessage(ticket) {
+function confirmationMessage(ticket, needsAddress) {
   return (
     'Got it, thanks. I have created ticket ' + ticket.id + ': ' +
     TRADE_LABELS[ticket.trade] + ' - ' + URGENCY_LABELS[ticket.urgency] + '.\n' +
     NEXT_STEP[ticket.urgency] +
-    ' You do not need to do anything else.'
+    (needsAddress ? '' : ' You do not need to do anything else.')
   );
 }
 
@@ -299,16 +311,21 @@ const FOLLOWUP_PATTERNS = [
   'prevent more damage', 'prevent further damage', 'stop it from getting worse',
   'any update', 'status of', 'what is the status', "what's the status",
   'when will', 'when is the', 'has anyone', 'did anyone', 'is someone coming',
+  'contact me', 'call me', 'called me', 'contacted', 'get in touch', 'reach out',
+  "hasn't called", 'hasnt called', 'not called', "didn't call", 'didnt call',
+  'still waiting', "haven't heard", 'havent heard',
 ];
 
 function isFollowupOnTicket(text) {
   const str = String(text || '');
-  // A message that names a specific trade with real keyword hits is a new
-  // issue report, not a follow-up.
-  if (scoreTrades(str) !== 'general') return false;
   const padded = ' ' + str.toLowerCase() + ' ';
+  // A question about the ticket (contact, timing, status) is a follow-up
+  // even when it names the trade: "will the plumber contact me?"
   if (padded.includes('?')) return true;
-  return FOLLOWUP_PATTERNS.some((p) => padded.includes(p));
+  if (FOLLOWUP_PATTERNS.some((p) => padded.includes(p))) return true;
+  // A plain statement naming a specific trade with real keyword hits is a
+  // new issue report, not a follow-up.
+  return false;
 }
 
 // Safe interim guidance per trade while the tenant waits for the pro.
@@ -690,6 +707,7 @@ module.exports = {
   tradeReplyTarget,
   interimAdviceFor,
   TRADE_LABELS,
+  tradePersonLabel,
   URGENCY_LABELS,
   NEXT_STEP,
 };

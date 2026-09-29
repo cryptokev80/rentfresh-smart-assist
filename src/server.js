@@ -392,7 +392,23 @@ function ticketStatusLabel(ticket) {
 
 async function handleTicketFollowup(from, ticket, text) {
   const lower = String(text || '').toLowerCase();
-  if (/any update|status|when will|when is|has anyone|did anyone|someone coming/.test(lower)) {
+  // "Will the plumber contact me?" Answer from the ticket's actual state.
+  if (/contact me|call me|called me|get in touch|reach out|someone coming|is coming/.test(lower)) {
+    const person = triage.tradePersonLabel(ticket.trade);
+    if (ticket.status === 'dispatched' && ticket.assignedProPhone) {
+      const pro = policies.findProByPhone(store, ticket.assignedProPhone);
+      const who = pro ? relay.proLabel(pro) : 'The ' + person;
+      await reply(from, 'Yes. ' + who + ' has ticket ' + ticket.id + ' and will contact you to schedule the visit.');
+    } else {
+      await reply(
+        from,
+        'Not yet. Ticket ' + ticket.id + ' is ' + ticketStatusLabel(ticket) +
+          '. Once the quote is approved, the ' + person + ' will contact you to schedule the visit.'
+      );
+    }
+    return;
+  }
+  if (/any update|status|when will|when is|has anyone|did anyone/.test(lower)) {
     await reply(
       from,
       'Ticket ' + ticket.id + ' is ' + ticketStatusLabel(ticket) +
@@ -421,7 +437,7 @@ async function finishTriage(from, convo, text) {
     summary: result.summary, photoIds: issue.photoIds || [],
   });
   ticket = enrichTicketFromProperty(ticket) || ticket;
-  let msg = triage.confirmationMessage(ticket);
+  let msg = triage.confirmationMessage(ticket, !ticket.address);
   if (result.diyTip) msg += '\n\nSafe to try in the meantime: ' + result.diyTip;
   if (!ticket.address) {
     // No address on file (unknown tenant, no landlord property match):
