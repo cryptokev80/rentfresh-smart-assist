@@ -364,19 +364,20 @@ async function handleText(from, convo, text) {
 
   // 6b. Follow-up on an open ticket: the tenant asks a question or checks
   // status instead of reporting something new. On an actively dispatched
-  // ticket the pro gets it directly through the relay; otherwise answer in
-  // the ticket's context instead of starting a fresh triage.
+  // ticket the pro gets it directly through the relay (plain answers to
+  // the pro's questions relay too); otherwise answer in the ticket's
+  // context instead of starting a fresh triage.
   const openTicket = store.findOpenTicketByPhone(from);
-  if (openTicket && triage.isFollowupOnTicket(text)) {
-    const relayTicket = store.findRelayTicketByTenantPhone(from);
-    if (relayTicket) {
-      const pro = policies.findProByPhone(store, relayTicket.assignedProPhone);
-      if (pro) {
-        const ok = await forwardRelayText('tenant', relayTicket, pro, from, text);
-        if (ok) await reply(from, relay.relayAck('tenant', pro));
-        return;
-      }
+  const relayTicket = store.findRelayTicketByTenantPhone(from);
+  if (relayTicket && relay.tenantTargetsTrade(text, relayTicket)) {
+    const pro = policies.findProByPhone(store, relayTicket.assignedProPhone);
+    if (pro) {
+      const ok = await forwardRelayText('tenant', relayTicket, pro, from, text);
+      if (ok) await reply(from, relay.relayAck('tenant', pro));
+      return;
     }
+  }
+  if (openTicket && triage.isFollowupOnTicket(text)) {
     await handleTicketFollowup(from, openTicket, text);
     return;
   }
