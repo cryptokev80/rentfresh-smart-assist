@@ -63,11 +63,15 @@ function tradeTargetsTenant(text) {
   return triage.tradeReplyTarget(text) === 'tenant';
 }
 
-// Tenant -> trade? Callers must have already excluded emergencies and new
-// issues (handleText does: emergency is step 1, new issues fall through to
-// normal triage). relayTicket is the sender's active relay ticket or null.
+// Tenant -> trade? During an active relay the tenant is mid-conversation
+// with the pro, so plain answers ("it's the hot water side") relay too.
+// Only a genuinely new issue (a different trade) stays out; emergencies
+// never reach here (handleText step 1) but are excluded anyway.
 function tenantTargetsTrade(text, relayTicket) {
-  return !!relayTicket && triage.isFollowupOnTicket(text);
+  if (!relayTicket) return false;
+  const cls = triage.classify(String(text || ''));
+  if (cls.emergency) return false;
+  return cls.trade === 'general' || cls.trade === relayTicket.trade;
 }
 
 // Prefix a relayed text so each side knows who is talking.
