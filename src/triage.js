@@ -588,14 +588,30 @@ function tenantQuoteMessage(ticket, approved) {
 // is approved (by the landlord, or auto-approved under the NTE cap).
 // ---------------------------------------------------------------------------
 
+// Urgency line for the pro job card: the trade must know before accepting
+// whether to respond now or fit the job around their schedule.
+function urgencyLine(urgency) {
+  if (urgency === 'emergency') return 'Urgency: EMERGENCY - please respond immediately.';
+  if (urgency === 'urgent') return 'Urgency: Urgent - the tenant needs someone ASAP, ideally today.';
+  if (urgency === 'routine') return 'Urgency: Scheduled - flexible timing, fit it around your availability.';
+  return 'Urgency: not specified - please confirm timing with the tenant.';
+}
+
+// Ticket summaries are stored as '<Trade> issue reported: "<text>"'. The card
+// already labels the line, so strip the redundant prefix for a clean read.
+function cleanSummary(summary) {
+  return String(summary || '').replace(/^[A-Za-z&'., ]+ issue reported:\s*/, '');
+}
+
 function proJobCardMessage(ticket, pro) {
   const q = ticket.quote || { labor: 0, materials: 0, total: 0 };
   const lines = [];
   lines.push('New ProQue job for ' + (pro.company || pro.name) + ':');
   lines.push('');
   lines.push('Ticket ' + ticket.id + ' - ' + (TRADE_LABELS[ticket.trade] || ticket.trade));
+  lines.push(urgencyLine(ticket.urgency));
   if (ticket.address) lines.push('Address: ' + ticket.address + (ticket.unit ? ' (' + ticket.unit + ')' : ''));
-  if (ticket.summary) lines.push('Issue: ' + ticket.summary);
+  if (ticket.summary) lines.push('Issue: ' + cleanSummary(ticket.summary));
   if (q.total > 0) {
     lines.push(
       'Quote: ' + fmtCAD(q.total) + ' total (' +
@@ -613,6 +629,34 @@ function proJobCardMessage(ticket, pro) {
   lines.push('');
   lines.push('Reply here to confirm or ask questions. Kevin sees every reply.');
   return lines.join('\n');
+}
+
+// ---------------------------------------------------------------------------
+// Trade reply routing (relay). A known trade replying on an actively
+// dispatched ticket: is this message meant for the tenant (a question or a
+// detail request -> relay it) or for Kevin (a confirmation or status update
+// -> today's Kevin flow)?
+//
+// Anything phrased as a question or a request of the tenant goes to the
+// tenant. Everything else defaults to Kevin: a misrouted status update just
+// waits for Kevin, but a misrouted question confuses the tenant.
+// ---------------------------------------------------------------------------
+
+const TRADE_TO_TENANT_PATTERNS = [
+  /\?/, // any question mark
+  /\b(can|could|would|will|do|does|did) you\b/i, // "can you send..."
+  /\b(is|are) (anyone|someone|there)\b/i, // "is anyone home"
+  /\bplease\b/i, // "please leave the door unlocked"
+  /\bsend (me|a photo|photos?|pictures?|a video|it)\b/i, // "send me a photo"
+  /\bwhere is\b/i, // "where is the shutoff valve"
+  /^(what|when|which|who|how)\b/i, // "what floor is the unit on"
+];
+
+function tradeReplyTarget(text) {
+  const t = String(text || '');
+  if (!t.trim()) return 'kevin';
+  if (TRADE_TO_TENANT_PATTERNS.some((p) => p.test(t))) return 'tenant';
+  return 'kevin';
 }
 
 module.exports = {
@@ -634,6 +678,7 @@ module.exports = {
   proJobCardMessage,
   fmtCAD,
   isFollowupOnTicket,
+  tradeReplyTarget,
   interimAdviceFor,
   TRADE_LABELS,
   URGENCY_LABELS,
