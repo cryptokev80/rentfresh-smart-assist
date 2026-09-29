@@ -30,6 +30,14 @@ function tradePersonLabel(trade) {
   return TRADE_PERSON[trade] || 'pro';
 }
 
+// Reply when the tenant asks a question mid-triage (before any ticket
+// exists): answer it, then re-ask the timing question.
+function midFlowQuestionReply(trade) {
+  return 'Good question. Once the ticket is created and the quote is approved, the ' +
+    tradePersonLabel(trade) + ' will contact you to schedule the visit. ' +
+    'Now, do you need someone out as soon as possible, or can this be scheduled for a regular visit?';
+}
+
 const URGENCY_LABELS = {
   emergency: 'Emergency',
   urgent: 'Urgent',
@@ -708,6 +716,7 @@ module.exports = {
   interimAdviceFor,
   TRADE_LABELS,
   tradePersonLabel,
+  midFlowQuestionReply,
   URGENCY_LABELS,
   NEXT_STEP,
 };

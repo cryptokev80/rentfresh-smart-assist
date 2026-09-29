@@ -314,7 +314,16 @@ async function handleText(from, convo, text) {
   }
 
   // 4. Continuing an in-progress flow.
-  if (convo.state === 'awaiting_info' && convo.issue) return finishTriage(from, convo, text);
+  if (convo.state === 'awaiting_info' && convo.issue) {
+    // A question mid-flow ("will the plumber contact me?") is not the
+    // timing answer: answer it conversationally, then re-ask the timing
+    // question without advancing the flow.
+    if (triage.isFollowupOnTicket(text)) {
+      await reply(from, triage.midFlowQuestionReply(convo.issue.trade));
+      return;
+    }
+    return finishTriage(from, convo, text);
+  }
   if (convo.state === 'awaiting_lead' && convo.lead) return finishLead(from, convo, text);
   if (convo.state === 'awaiting_address' && convo.ticketId) {
     // The tenant was asked for the property address. If this looks like a
