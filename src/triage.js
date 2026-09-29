@@ -488,6 +488,14 @@ function isAcknowledgment(text) {
   return words.some((w) => ACK_CORE.has(w)) && words.every((w) => ACK_FILLER.has(w));
 }
 
+// A bare greeting: "hi", "hello", "hey" and nothing else. This opens a
+// conversation; it must never be read as a landlord decision, a command,
+// or a ticket follow-up.
+const GREETING_RE = /^(hi+|hello+|hey+|yo|howdy|greetings|good morning|good afternoon|good evening|good day)[.!]*$/i;
+function isGreeting(text) {
+  return GREETING_RE.test(String(text || '').trim());
+}
+
 function leadQuestionsMessage() {
   return biz.fill(biz.messaging.leadQuestions);
 }
@@ -669,6 +677,7 @@ module.exports = {
   generalReplyMessage,
   wantsHuman,
   isAcknowledgment,
+  isGreeting,
   leadQuestionsMessage,
   landlordSummaryMessage,
   parseLandlordDecision,
