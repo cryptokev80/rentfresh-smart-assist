@@ -627,7 +627,7 @@ function proJobCardMessage(ticket, pro) {
     );
   }
   lines.push('');
-  lines.push('Reply here to confirm or ask questions. Kevin sees every reply.');
+  lines.push('Reply here to confirm, ask the tenant questions, or request photos. Kevin sees every reply.');
   return lines.join('\n');
 }
 
