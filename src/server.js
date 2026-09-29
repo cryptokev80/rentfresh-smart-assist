@@ -21,6 +21,7 @@ const triage = require('./triage');
 const msgStatus = require('./status');
 const alerts = require('./alerts');
 const policies = require('./policies');
+const relay = require('./relay');
 
 const app = express();
 // Capture the raw body so we can verify Meta's X-Hub-Signature-256.
@@ -158,10 +159,10 @@ app.post('/webhook', (req, res) => {
   })();
 });
 
-async function reply(to, text) {
+async function reply(to, text, opts) {
   // ProQue triages 24/7: every message gets an answer right away, no
   // business-hours note. Emergencies escalate immediately.
-  const idx = store.addMessage(to, 'out', 'text', text);
+  const idx = store.addMessage(to, 'out', 'text', text, opts);
   try {
     const result = await wa.sendText(to, text);
     const waId = result && result.messages && result.messages[0] ? result.messages[0].id : null;
@@ -172,6 +173,30 @@ async function reply(to, text) {
     store.updateMessage(to, idx, { status: 'failed', statusError: err.message });
     await flagForKevin(to, 'a reply failed to send');
     logEvent({ event: 'outbound', to, ok: false, error: err.message });
+    return false;
+  }
+}
+
+// Outbound photo/video (relay forwards). Mirrors reply(): logs first, then
+// sends; on failure the stored message is marked failed and Kevin is
+// flagged. Returns true only when Meta accepted the message.
+async function replyMedia(to, kind, buffer, mimeType, caption, opts) {
+  const idx = store.addMessage(to, 'out', kind, caption ? '[' + kind + '] ' + caption : '[' + kind + ']', opts);
+  try {
+    const up = await wa.uploadMedia(buffer, mimeType);
+    const mediaId = up && up.id;
+    if (!mediaId) throw new Error('media upload returned no id');
+    const result = kind === 'video'
+      ? await wa.sendVideo(to, mediaId, caption || '')
+      : await wa.sendImage(to, mediaId, caption || '');
+    const waId = result && result.messages && result.messages[0] ? result.messages[0].id : null;
+    if (waId) store.updateMessage(to, idx, { waId, status: 'sent' });
+    logEvent({ event: 'outbound', to, kind, ok: true, dryRun: !!(result && result.dryRun), waId: waId || null });
+    return true;
+  } catch (err) {
+    store.updateMessage(to, idx, { status: 'failed', statusError: err.message });
+    await flagForKevin(to, 'a ' + kind + ' failed to send');
+    logEvent({ event: 'outbound', to, kind, ok: false, error: err.message });
     return false;
   }
 }
@@ -191,8 +216,8 @@ async function handleMessage(value, msg) {
   if (msg.type === 'text' && msg.text && msg.text.body) {
     store.addMessage(from, 'in', 'text', msg.text.body);
     await handleText(from, convo, msg.text.body);
-  } else if (msg.type === 'image' && msg.image) {
-    await handleImage(from, convo, msg);
+  } else if ((msg.type === 'image' && msg.image) || (msg.type === 'video' && msg.video)) {
+    await handleMedia(from, convo, msg);
   } else {
     store.addMessage(from, 'in', msg.type || 'unknown', '');
     await reply(from, biz.fill(biz.messaging.unknownMedia));
@@ -230,9 +255,16 @@ async function handleText(from, convo, text) {
   }
 
   // 1b. A known trade replying (e.g. to a job card): never triage a pro as
-  // a tenant. Their reply goes straight to Kevin.
+  // a tenant. Confirmations and status updates go to Kevin, as today;
+  // questions and detail requests relay to the tenant on the active ticket.
   const proProfile = policies.findProByPhone(store, from);
   if (proProfile) {
+    const relayTicket = store.findRelayTicketByProPhone(from);
+    if (relayTicket && relay.tradeTargetsTenant(text)) {
+      const ok = await forwardRelayText('pro', relayTicket, proProfile, from, text);
+      if (ok) await reply(from, relay.relayAck('pro', proProfile));
+      return;
+    }
     await flagForKevin(from, proProfile.name + ' replied: ' + String(text).slice(0, 140));
     const firstName = String(proProfile.name || '').split(' ')[0] || 'there';
     await reply(from, 'Thanks ' + firstName + ', Kevin has your message and will confirm shortly.');
@@ -305,10 +337,20 @@ async function handleText(from, convo, text) {
   }
 
   // 6b. Follow-up on an open ticket: the tenant asks a question or checks
-  // status instead of reporting something new. Answer in the ticket's
-  // context instead of starting a fresh triage.
+  // status instead of reporting something new. On an actively dispatched
+  // ticket the pro gets it directly through the relay; otherwise answer in
+  // the ticket's context instead of starting a fresh triage.
   const openTicket = store.findOpenTicketByPhone(from);
   if (openTicket && triage.isFollowupOnTicket(text)) {
+    const relayTicket = store.findRelayTicketByTenantPhone(from);
+    if (relayTicket) {
+      const pro = policies.findProByPhone(store, relayTicket.assignedProPhone);
+      if (pro) {
+        const ok = await forwardRelayText('tenant', relayTicket, pro, from, text);
+        if (ok) await reply(from, relay.relayAck('tenant', pro));
+        return;
+      }
+    }
     await handleTicketFollowup(from, openTicket, text);
     return;
   }
@@ -460,10 +502,37 @@ function parseMoney(v) {
 // address. Kevin still gets his alert; the pro replying is routed to Kevin,
 // never triaged as a tenant.
 async function dispatchApprovedTicket(ticket) {
+  const flow = ticket.landlordDecision === 'auto-approved' ? 'nte-auto' : 'nte-approved';
+  // Never send a trade out blind. The job card must carry the property
+  // address and tenant contact; without them the trade cannot accept the
+  // job informed. Hold the dispatch and tell Kevin what's missing instead
+  // of sending a half-empty card. Kevin re-runs dispatch by setting the
+  // quote again once the info is on file.
+  const missing = [];
+  if (!ticket.address) missing.push('property address');
+  if (!ticket.phone) missing.push('tenant phone');
+  if (missing.length) {
+    const record = {
+      flow,
+      candidates: [],
+      status: 'blocked',
+      dispatchedAt: new Date().toISOString(),
+      proId: null,
+      proName: null,
+      reason: 'missing ' + missing.join(' and '),
+    };
+    store.updateTicket(ticket.id, { dispatch: record });
+    await flagForKevin(
+      ticket.phone || 'inbox',
+      'cannot dispatch ' + ticket.id + ': missing ' + missing.join(' and ') +
+        ' - job card held, nothing sent to any trade'
+    );
+    return record;
+  }
   const candidates = policies.findCandidateTrades(store, ticket);
   const pro = candidates[0] || null;
   const record = {
-    flow: ticket.landlordDecision === 'auto-approved' ? 'nte-auto' : 'nte-approved',
+    flow,
     candidates: candidates.map((c) => ({ id: c.id, name: c.name })),
     status: pro ? 'sending' : 'no-trade',
     dispatchedAt: new Date().toISOString(),
@@ -481,6 +550,11 @@ async function dispatchApprovedTicket(ticket) {
     store.updateTicket(ticket.id, {
       dispatch: record,
       status: sent ? 'dispatched' : ticket.status,
+      // Link the trade to the ticket so the trade<->tenant relay knows who
+      // is on the job. The relay itself only goes live on a real dispatch.
+      assignedProPhone: pro.phone,
+      assignedProId: pro.id || null,
+      assignedProName: pro.name || null,
     });
     await flagForKevin(
       pro.phone,
@@ -493,6 +567,43 @@ async function dispatchApprovedTicket(ticket) {
     );
   }
   return record;
+}
+
+// ---------------------------------------------------------------------------
+// Trade <-> tenant relay: forward a text message from one side of an
+// actively dispatched ticket to the other. Returns true only when Meta
+// accepted the forward. On failure the sender is told honestly; Kevin is
+// flagged by reply()'s failure path. No relayed state is marked on the
+// ticket on failure.
+// ---------------------------------------------------------------------------
+async function forwardRelayText(fromRole, ticket, pro, senderPhone, text) {
+  if (!relay.isRelayActive(ticket, pro.phone)) return false;
+  const to = relay.relayRecipient(fromRole, ticket, pro);
+  if (!to) {
+    logEvent({ event: 'relay', ticket: ticket.id, from: fromRole, kind: 'text', ok: false, reason: 'no_recipient' });
+    return false;
+  }
+  const body = relay.buildRelayText(fromRole, ticket, pro, text);
+  const ok = await reply(to, body, { relay: relay.relayTag(fromRole, ticket) });
+  logEvent({ event: 'relay', ticket: ticket.id, from: fromRole, to, kind: 'text', ok });
+  if (!ok) await reply(senderPhone, relay.relayFailureNotice('text'));
+  return ok;
+}
+
+// Forward a photo/video across the relay. The media is downloaded from
+// Meta, re-uploaded, and sent to the other side with a prefixed caption.
+async function forwardRelayMedia(fromRole, ticket, pro, senderPhone, kind, buffer, mimeType, caption) {
+  if (!relay.isRelayActive(ticket, pro.phone)) return false;
+  const to = relay.relayRecipient(fromRole, ticket, pro);
+  if (!to || !buffer || !buffer.length) {
+    logEvent({ event: 'relay', ticket: ticket.id, from: fromRole, kind, ok: false, reason: !to ? 'no_recipient' : 'empty_media' });
+    return false;
+  }
+  const cap = relay.buildRelayCaption(fromRole, ticket, pro, kind, caption);
+  const ok = await replyMedia(to, kind, buffer, mimeType, cap, { relay: relay.relayTag(fromRole, ticket) });
+  logEvent({ event: 'relay', ticket: ticket.id, from: fromRole, to, kind, ok });
+  if (!ok) await reply(senderPhone, relay.relayFailureNotice(kind));
+  return ok;
 }
 
 async function handleLandlordReply(from, convo, text, ticket) {
@@ -519,6 +630,60 @@ async function handleLandlordReply(from, convo, text, ticket) {
   // Ambiguous reply: don't guess on money, let Kevin handle it.
   await flagForKevin(from, 'landlord reply needs review (' + ticket.id + ')');
   await reply(from, biz.fill(biz.messaging.landlordAmbiguous));
+}
+
+// Photos and videos. On an actively dispatched ticket the media belongs to
+// the other side of the job and is forwarded through the relay. Otherwise
+// photos keep today's AI-triage behavior; video outside a relay is still
+// unsupported (same unknownMedia reply as before).
+async function handleMedia(from, convo, msg) {
+  const kind = msg.type === 'video' ? 'video' : 'image';
+  const media = msg.image || msg.video || {};
+  const caption = media.caption || '';
+  const label = '[' + kind + ']' + (caption ? ' ' + caption : '');
+  const mimeType = media.mime_type || (kind === 'video' ? 'video/mp4' : 'image/jpeg');
+
+  // Trade sending media on their active ticket -> forward to the tenant.
+  const proProfile = policies.findProByPhone(store, from);
+  if (proProfile) {
+    const relayTicket = store.findRelayTicketByProPhone(from);
+    if (relayTicket) {
+      store.addMessage(from, 'in', kind, label);
+      const buffer = await wa.downloadMedia(media.id);
+      if (!buffer) {
+        await reply(from, 'I could not fetch that ' + (kind === 'video' ? 'video' : 'photo') + '. Please try sending it again.');
+        return;
+      }
+      const ok = await forwardRelayMedia('pro', relayTicket, proProfile, from, kind, buffer, mimeType, caption);
+      if (ok) await reply(from, relay.relayAck('pro', proProfile));
+      return;
+    }
+  } else {
+    // Tenant sending media on their actively dispatched ticket -> the pro.
+    const relayTicket = store.findRelayTicketByTenantPhone(from);
+    if (relayTicket) {
+      const pro = policies.findProByPhone(store, relayTicket.assignedProPhone);
+      if (pro) {
+        store.addMessage(from, 'in', kind, label);
+        const buffer = await wa.downloadMedia(media.id);
+        if (!buffer) {
+          await reply(from, 'I could not fetch that ' + (kind === 'video' ? 'video' : 'photo') + '. Please try sending it again.');
+          return;
+        }
+        const ok = await forwardRelayMedia('tenant', relayTicket, pro, from, kind, buffer, mimeType, caption);
+        if (ok) await reply(from, relay.relayAck('tenant', pro));
+        return;
+      }
+    }
+  }
+
+  // No active relay: photos keep today's behavior; video was never handled.
+  if (kind === 'video') {
+    store.addMessage(from, 'in', 'video', label);
+    await reply(from, biz.fill(biz.messaging.unknownMedia));
+    return;
+  }
+  await handleImage(from, convo, msg);
 }
 
 async function handleImage(from, convo, msg) {
@@ -774,7 +939,9 @@ app.post('/api/tickets/:id/quote', auth, async (req, res) => {
       ticket.phone || 'inbox',
       'quote ' + triage.fmtCAD(total) + ' within ' + triage.fmtCAD(check.limit) +
         ' cap: ' + ticket.id + ' auto-approved' +
-        (dispatch.proName ? ', dispatched to ' + dispatch.proName : ', no trade on file')
+        (dispatch.status === 'blocked'
+          ? ', dispatch BLOCKED: ' + (dispatch.reason || 'missing info')
+          : (dispatch.proName ? ', dispatched to ' + dispatch.proName : ', no trade on file'))
     );
     return res.json({ id: ticket.id, decision: 'auto-approved', total, limit: check.limit });
   }
